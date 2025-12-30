@@ -1,18 +1,19 @@
 # Observability MCP Server
 
-Servidor MCP (Model Context Protocol) para observabilidad de red Juniper con integración de InfluxDB y Grafana.
+MCP (Model Context Protocol) server for Juniper network observability with InfluxDB and Grafana integration.
 
-## 📋 Descripción
+## Overview
 
-Este proyecto proporciona un servidor MCP que permite a asistentes de IA (Claude Desktop, GitHub Copilot) consultar métricas de red almacenadas en InfluxDB y gestionar dashboards de Grafana.
+This project provides an MCP server that allows AI assistants (Claude Desktop, GitHub Copilot) to query network metrics from InfluxDB and manage Grafana dashboards.
 
-### Herramientas Disponibles
+**Available Tools:**
+- `query_influx` - Execute Flux queries against InfluxDB for network metrics
+- `list_dashboards` - List all available Grafana dashboards
+- `get_dashboard` - Get details of a specific Grafana dashboard by UID
 
-- **query_influx**: Ejecuta consultas Flux contra InfluxDB para obtener métricas de dispositivos de red
-- **list_dashboards**: Lista todos los dashboards disponibles en Grafana
-- **get_dashboard**: Obtiene detalles de un dashboard específico por su UID
+---
 
-## 🏗️ Arquitectura
+## Architecture
 
 ```
 ┌─────────────────┐
@@ -22,339 +23,111 @@ Este proyecto proporciona un servidor MCP que permite a asistentes de IA (Claude
          │ stdio (MCP Protocol)
          ▼
 ┌─────────────────┐
-│  mcp_bridge.py  │  (Adaptador stdio ↔ HTTP)
+│  mcp_bridge.py  │  Bridge: stdio ↔ HTTP
 └────────┬────────┘
          │ HTTP
          ▼
 ┌─────────────────┐
-│   FastMCP       │  (MCP Server + REST API)
-│   server.py     │  [Puede ser local o container]
+│   MCP Server    │  FastMCP (Local or Docker)
+│   server.py     │
 └────────┬────────┘
          │
     ┌────┴────┐
     ▼         ▼
 ┌────────┐ ┌─────────┐
-│ InfluxDB│ │ Grafana │  [Siempre en Docker]
+│ InfluxDB│ │ Grafana │  [Always Docker]
 │ :8086   │ │ :3000   │
 └─────────┘ └─────────┘
-   Docker      Docker
 ```
 
-### 🐳 Arquitectura de Contenedores
+### Container Strategy
 
-Este proyecto usa una arquitectura **híbrida**:
+**Always in Docker:**
+- **InfluxDB** (port 8086) - Time-series database
+- **Grafana** (port 3000) - Visualization dashboards
 
-**Componentes en Docker (Obligatorio):**
-- **InfluxDB** (puerto 8086) - Base de datos de métricas time-series
-- **Grafana** (puerto 3000) - Visualización de dashboards
+**Flexible deployment:**
+- **MCP Server** - Can run locally (Python) or in Docker
+  - Local: Better for development, easy debugging
+  - Docker: Better for production, portable deployment
 
-**MCP Server (Flexible):**
-- **Opción 1**: Ejecutar localmente (Python nativo) - Recomendado para desarrollo
-- **Opción 2**: Ejecutar en Docker - Recomendado para producción
+---
 
-### ¿Por qué esta arquitectura?
+## Quick Start
 
-✅ **InfluxDB y Grafana en Docker**: 
-- Aislamiento y fácil gestión
-- Persistencia de datos con volúmenes
-- Configuración reproducible
-- Actualizaciones sencillas
-
-⚙️ **MCP Server flexible**:
-- **Local**: Desarrollo rápido, debugging fácil, integración directa con IDEs
-- **Docker**: Producción, despliegue consistente, aislamiento
-
-## 📁 Estructura del Proyecto
-
-```
-openntIA/
-├── README.md                          # Este archivo
-├── docker-compose.yaml                # Configuración de Docker
-├── mcp/
-│   ├── server.py                      # Servidor MCP principal (FastMCP)
-│   ├── mcp_bridge.py                  # Bridge stdio ↔ HTTP
-│   ├── config.py                      # Configuración (InfluxDB, Grafana)
-│   ├── requirements.txt               # Dependencias Python
-│   ├── start_servers.sh               # Script de inicio
-│   ├── Dockerfile                     # (Opcional) Para containerizar
-│   ├── verify_setup.py                # Script de verificación
-│   └── tools/
-│       ├── __init__.py
-│       ├── influx.py                  # Herramientas de InfluxDB
-│       └── grafana.py                 # Herramientas de Grafana
-├── claude_desktop_config.json         # Configuración para Claude Desktop
-└── .vscode/
-    └── settings.json                  # Configuración para VS Code + Copilot
-```
-
-## 🚀 Instalación y Despliegue
-
-### Paso 1: Levantar Servicios Base (InfluxDB + Grafana)
-
-Estos servicios **siempre** corren en Docker:
+### 1. Start Infrastructure (InfluxDB + Grafana)
 
 ```bash
 cd /home/ubuntu/openntIA
 docker-compose up -d
 ```
 
-Esto levantará:
-- **InfluxDB** en `http://localhost:8086`
-- **Grafana** en `http://localhost:3000`
-
-Verifica que están corriendo:
-
+Verify containers are running:
 ```bash
 docker-compose ps
-
-# Debería mostrar:
-# influxdb2  - Up - 0.0.0.0:8086->8086/tcp
-# grafana    - Up - 0.0.0.0:3000->3000/tcp
 ```
 
-Accede a Grafana:
-- URL: http://localhost:3000
-- Usuario: `admin`
-- Contraseña: `admin123`
-
-### Paso 2: Configurar Credenciales
-
-Copia el archivo de ejemplo y edita con tus credenciales:
+### 2. Configure Credentials
 
 ```bash
-cd /home/ubuntu/openntIA/mcp
+cd mcp
 cp config.example.py config.py
-nano config.py  # o usa tu editor preferido
+nano config.py
 ```
 
-Actualiza las siguientes variables en `config.py`:
-
+Edit with your tokens:
 ```python
-# InfluxDB (Docker container)
 INFLUX_URL = "http://localhost:8086"
-INFLUX_TOKEN = "tu-token-de-influxdb"  # Obtenerlo de InfluxDB UI
-INFLUX_ORG = "juniper"
+INFLUX_TOKEN = "your-influxdb-token"
+INFLUX_ORG = "network"
 INFLUX_BUCKET = "juniper"
 
-# Grafana (Docker container)
 GRAFANA_URL = "http://localhost:3000"
-GRAFANA_TOKEN = "tu-api-key-de-grafana"  # Crear en Grafana UI
+GRAFANA_TOKEN = "your-grafana-api-key"
 ```
 
-**Cómo obtener los tokens:**
+**Get tokens:**
+- InfluxDB: http://localhost:8086 → Data → API Tokens
+- Grafana: http://localhost:3000 → Configuration → API Keys
 
-1. **Token de InfluxDB**:
-   - Ve a http://localhost:8086
-   - Login con las credenciales del `docker-compose.yaml`
-   - Data → API Tokens → Generate API Token
+### 3. Start MCP Server
 
-2. **Token de Grafana**:
-   - Ve a http://localhost:3000
-   - Configuration → API Keys → New API Key
-   - Role: Admin
-
-### Paso 3: Elegir Modo de Despliegue del MCP Server
-
-Tienes **dos opciones**:
-
----
-
-## 🐍 Opción A: MCP Server Local (Python Nativo)
-
-**Recomendado para**: Desarrollo, debugging, uso con IDEs (VS Code, Claude Desktop)
-
-### A1. Instalar Dependencias
-
+**Option A: Local (Recommended for development)**
 ```bash
-cd /home/ubuntu/openntIA/mcp
+cd mcp
 pip install -r requirements.txt
-```
-
-### A2. Verificar Configuración
-
-```bash
-python3 verify_setup.py
-```
-
-Este script verificará:
-- ✅ Dependencias Python instaladas
-- ✅ Credenciales configuradas
-- ✅ Conexión a InfluxDB
-- ✅ Conexión a Grafana
-- ✅ Disponibilidad de datos
-
-### A3. Iniciar el Servidor
-
-```bash
-chmod +x start_servers.sh
 ./start_servers.sh
 ```
 
-Esto iniciará:
-- **FastMCP Server** en puerto `3334` (protocolo MCP)
-- **REST API** en puerto `8000` (para testing)
-
-### A4. Verificar que Funciona
-
-```bash
-# Listar dashboards
-curl http://localhost:8000/grafana/dashboards
-
-# Consultar InfluxDB
-curl -X POST http://localhost:8000/influx/query \
-  -H "Content-Type: application/json" \
-  -d '{"flux": "from(bucket: \"juniper\") |> range(start: -1h) |> limit(n: 5)"}'
-```
-
----
-
-## 🐳 Opción B: MCP Server en Docker
-
-**Recomendado para**: Producción, despliegue en servidores, entornos aislados
-
-### B1. Construir la Imagen
-
-```bash
-cd /home/ubuntu/openntIA/mcp
-docker build -t observability-mcp:latest .
-```
-
-### B2. Ejecutar el Container
-
-```bash
-docker run -d \
-  --name mcp-server \
-  --network host \
-  -v $(pwd)/config.py:/app/config.py:ro \
-  -p 8000:8000 \
-  -p 3334:3334 \
-  observability-mcp:latest
-```
-
-**Nota**: Usamos `--network host` para que el container pueda acceder a InfluxDB y Grafana en localhost.
-
-### B3. Ver Logs
-
-```bash
-docker logs -f mcp-server
-```
-
-### B4. Detener el Container
-
-```bash
-docker stop mcp-server
-docker rm mcp-server
-```
-
----
-
-## 🔄 Opción C: Todo en Docker Compose (Completo)
-
-Para un despliegue todo-en-uno, actualiza el `docker-compose.yaml`:
-
-```yaml
-version: '3.8'
-
-services:
-  influxdb:
-    # ... configuración existente ...
-
-  grafana:
-    # ... configuración existente ...
-
-  mcp-server:
-    build: ./mcp
-    container_name: mcp-server
-    ports:
-      - "8000:8000"
-      - "3334:3334"
-    volumes:
-      - ./mcp/config.py:/app/config.py:ro
-    environment:
-      - INFLUX_URL=http://influxdb:8086
-      - GRAFANA_URL=http://grafana:3000
-    depends_on:
-      - influxdb
-      - grafana
-    networks:
-      - observability-net
-
-networks:
-  observability-net:
-    driver: bridge
-```
-
-Luego ejecuta:
-
+**Option B: Docker (Recommended for production)**
 ```bash
 docker-compose up -d --build
+# MCP server already included in docker-compose.yaml
+```
+
+### 4. Verify
+
+```bash
+# Test REST API
+curl http://localhost:3333/grafana/dashboards
+
+# Test health
+curl http://localhost:8086/health  # InfluxDB
+curl http://localhost:3000/api/health  # Grafana
 ```
 
 ---
 
-## 📊 Resumen de Puertos
+## Client Configuration
 
-| Servicio | Puerto | Descripción | Ubicación |
-|----------|--------|-------------|-----------|
-| **InfluxDB** | 8086 | Base de datos de métricas | Docker (obligatorio) |
-| **Grafana** | 3000 | Dashboards y visualización | Docker (obligatorio) |
-| **REST API** | 8000 | API de testing (opcional) | Local o Docker |
-| **MCP Server** | 3334 | Servidor MCP HTTP/SSE | Local o Docker |
+### Claude Desktop
 
-### 2.1. Verificar Configuración
+Edit configuration file:
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Linux**: `~/.config/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
-Antes de iniciar el servidor, verifica que todo está correctamente configurado:
-
-```bash
-cd /home/ubuntu/openntIA/mcp
-python3 verify_setup.py
-```
-
-Este script verificará:
-- ✅ Dependencias Python instaladas
-- ✅ Credenciales configuradas
-- ✅ Conexión a InfluxDB
-- ✅ Conexión a Grafana
-- ✅ Disponibilidad de datos
-
-### 3. Iniciar el Servidor
-
-```bash
-cd /home/ubuntu/openntIA/mcp
-chmod +x start_servers.sh
-./start_servers.sh
-```
-
-Esto iniciará:
-- **FastMCP Server** en puerto `3334` (protocolo MCP)
-- **REST API** en puerto `8000` (para testing)
-
-### 4. Verificar que el Servidor Funciona
-
-Prueba la API REST:
-
-```bash
-# Listar dashboards
-curl http://localhost:8000/grafana/dashboards
-
-# Consultar InfluxDB
-curl -X POST http://localhost:8000/influx/query \
-  -H "Content-Type: application/json" \
-  -d '{"flux": "from(bucket: \"juniper\") |> range(start: -1h) |> limit(n: 5)"}'
-```
-
-## 🔧 Configuración de Clientes
-
-### Opción 1: Claude Desktop
-
-1. **Edita la configuración de Claude Desktop:**
-
-   - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-   - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-   - **Linux**: `~/.config/Claude/claude_desktop_config.json`
-
-2. **Agrega la siguiente configuración:**
-
+Add:
 ```json
 {
   "mcpServers": {
@@ -367,24 +140,11 @@ curl -X POST http://localhost:8000/influx/query \
 }
 ```
 
-3. **Reinicia Claude Desktop**
+Restart Claude Desktop and verify tools appear (🔨 icon).
 
-4. **Verifica que funciona:**
-   - Abre Claude Desktop
-   - Haz clic en el ícono de herramientas (🔨)
-   - Deberías ver las 3 herramientas: `query_influx`, `list_dashboards`, `get_dashboard`
+### VS Code + GitHub Copilot
 
-### Opción 2: Visual Studio Code + GitHub Copilot
-
-1. **Instala la extensión MCP:**
-   - Abre VS Code
-   - Ve a Extensions (Ctrl+Shift+X)
-   - Busca e instala: **"Model Context Protocol"** o **"MCP Client"**
-
-2. **Configura VS Code:**
-
-Crea/edita `.vscode/settings.json` en la raíz del proyecto:
-
+Create/edit `.vscode/settings.json`:
 ```json
 {
   "mcp.servers": {
@@ -397,268 +157,348 @@ Crea/edita `.vscode/settings.json` en la raíz del proyecto:
 }
 ```
 
-3. **Recarga VS Code:**
-   - Presiona `Ctrl+Shift+P`
-   - Ejecuta: `Developer: Reload Window`
-
-4. **Verifica que funciona:**
-   - Abre GitHub Copilot Chat
-   - Pregunta: "¿Cuáles son los dashboards disponibles en Grafana?"
-   - Copilot debería usar la herramienta `list_dashboards`
-
-## 📊 Ejemplos de Uso
-
-### Consultar Interfaces con Mayor Utilización
-
-```
-¿Cuáles son las interfaces con mayor utilización de ancho de banda en las últimas 24 horas?
-```
-
-### Listar Dashboards
-
-```
-Muéstrame todos los dashboards disponibles en Grafana
-```
-
-### Consultar Métricas de BGP
-
-```
-¿Cuántos peers BGP están activos en el dispositivo mx960-core1?
-```
-
-### Analizar Recursos del Sistema
-
-```
-Muéstrame el uso de CPU y memoria de todos los dispositivos en la última hora
-```
-
-## 🛠️ Desarrollo y Testing
-
-### Modo Debug
-
-Para ver logs detallados del bridge:
-
-```bash
-cd /home/ubuntu/openntIA/mcp
-python3 mcp_bridge.py 2>&1 | tee bridge.log
-```
-
-### Probar Consultas Flux
-
-Usa el endpoint REST para testing rápido:
-
-```bash
-curl -X POST http://localhost:8000/influx/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "flux": "from(bucket: \"juniper\") |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"interface_stats\") |> limit(n: 10)"
-  }'
-```
-
-### Verificar Mediciones Disponibles
-
-```bash
-curl -X POST http://localhost:8000/influx/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "flux": "import \"influxdata/influxdb/schema\"\nschema.measurements(bucket: \"juniper\")"
-  }'
-```
-
-## 🔍 Troubleshooting
-
-### Problemas con Containers (InfluxDB/Grafana)
-
-**Error**: `Connection refused` al conectar a InfluxDB o Grafana
-
-**Solución**:
-```bash
-# Verificar que los containers están corriendo
-docker-compose ps
-
-# Ver logs de InfluxDB
-docker-compose logs influxdb
-
-# Ver logs de Grafana
-docker-compose logs grafana
-
-# Reiniciar servicios
-docker-compose restart
-
-# Verificar salud de los servicios
-curl http://localhost:8086/health  # InfluxDB
-curl http://localhost:3000/api/health  # Grafana
-```
-
-**Error**: Los containers no inician
-
-**Solución**:
-```bash
-# Ver logs detallados
-docker-compose logs -f
-
-# Eliminar y recrear containers
-docker-compose down -v
-docker-compose up -d
-
-# Verificar que no hay conflictos de puertos
-sudo netstat -tulpn | grep -E ':(8086|3000)'
-```
-
-**Error**: "No space left on device"
-
-**Solución**:
-```bash
-# Limpiar volúmenes no utilizados
-docker volume prune
-
-# Ver espacio usado por Docker
-docker system df
-
-# Limpiar todo (¡cuidado con los datos!)
-docker system prune -a --volumes
-```
-
-### Problemas con MCP Server
-
-**Error**: `ModuleNotFoundError: No module named 'fastmcp'`
-
-**Solución**:
-```bash
-# Si usas MCP Server local
-pip install -r mcp/requirements.txt
-
-# Si usas Docker, reconstruye la imagen
-docker-compose build mcp-server
-# o
-cd mcp && docker build -t observability-mcp:latest .
-```
-
-**Error**: MCP Server no puede conectar a InfluxDB/Grafana
-
-**Solución**:
-```bash
-# Si MCP Server está en Docker, verifica la red
-docker network inspect openntia_observability-net
-
-# Si MCP Server está local, verifica localhost
-ping localhost
-curl http://localhost:8086/health
-curl http://localhost:3000/api/health
-
-# Verifica las URLs en config.py
-cat mcp/config.py | grep URL
-```
-
-### Claude Desktop no muestra las herramientas
-
-1. Verifica que el servidor está corriendo:
-   ```bash
-   ps aux | grep mcp
-   ```
-
-2. Revisa los logs de Claude Desktop:
-   - macOS: `~/Library/Logs/Claude/`
-   - Windows: `%APPDATA%\Claude\logs\`
-
-3. Verifica la ruta en `claude_desktop_config.json` es correcta
-
-### GitHub Copilot no encuentra las herramientas
-
-1. Verifica que la extensión MCP está instalada
-2. Recarga VS Code completamente
-3. Revisa la configuración en `.vscode/settings.json`
-
-### Errores de conexión a InfluxDB/Grafana
-
-**Error**: `Connection refused`
-
-**Solución**: Verifica que los servicios están corriendo:
-```bash
-# Verificar containers de Docker
-docker-compose ps
-
-# Verificar conectividad
-curl http://localhost:8086/health  # InfluxDB
-curl http://localhost:3000/api/health  # Grafana
-
-# Si no responden, reiniciar
-docker-compose restart
-```
-
-### MCP Server en Docker vs Local
-
-**Diferencias de configuración:**
-
-| Aspecto | MCP Local | MCP Docker |
-|---------|-----------|------------|
-| **URLs de conexión** | `http://localhost:8086` | `http://influxdb:8086` (si en misma red Docker) |
-| **Configuración** | `config.py` local | Volumen montado o ENV vars |
-| **Debugging** | Fácil con logs en consola | `docker logs mcp-server` |
-| **Actualizaciones** | `git pull` + reiniciar | Rebuild imagen Docker |
-| **Integración IDE** | Directa | Requiere configuración especial |
-
-**Recomendación**: Usa **MCP local** para desarrollo y **MCP Docker** para producción.
-
-## 📝 Notas Importantes
-
-### Arquitectura de Containers
-
-- **InfluxDB y Grafana**: Siempre corren en Docker containers
-  - Datos persistentes en volúmenes Docker
-  - Configuración en `docker-compose.yaml`
-  - Reinicio automático habilitado
-
-- **MCP Server**: Flexible (local o Docker)
-  - **Local**: Mejor para desarrollo, debugging directo
-  - **Docker**: Mejor para producción, portabilidad
-
-### Puertos y Conectividad
-
-- El **bridge MCP** (`mcp_bridge.py`) debe estar corriendo antes de usar Claude Desktop o GitHub Copilot
-- Si usas **MCP Server en Docker con `--network host`**, accede a InfluxDB/Grafana con `localhost`
-- Si usas **MCP Server en Docker con red personalizada**, accede con nombres de servicio (`influxdb`, `grafana`)
-- El servidor MCP usa el puerto **3334** por defecto
-- La REST API usa el puerto **8000** (solo para testing)
-- Las consultas Flux tienen un timeout de 30 segundos
-- El bucket de InfluxDB por defecto es `juniper`
-
-### Persistencia de Datos
-
-Los datos se almacenan en volúmenes Docker:
-```bash
-# Ver volúmenes
-docker volume ls | grep openntia
-
-# Backup de InfluxDB
-docker exec influxdb influx backup /tmp/backup
-docker cp influxdb:/tmp/backup ./influxdb-backup
-
-# Backup de Grafana
-docker exec grafana tar czf /tmp/grafana-backup.tar.gz /var/lib/grafana
-docker cp grafana:/tmp/grafana-backup.tar.gz ./grafana-backup.tar.gz
-```
-
-## 🔐 Seguridad
-
-⚠️ **Importante**: 
-- No expongas el servidor MCP a internet sin autenticación
-- Guarda las credenciales de InfluxDB y Grafana en variables de entorno
-- Usa HTTPS en producción
-- Limita las consultas Flux para evitar sobrecarga
-
-## 📄 Licencia
-
-Este proyecto es para uso interno y fines de observabilidad de red.
-
-## 🤝 Contribuciones
-
-Para agregar nuevas herramientas al servidor MCP:
-
-1. Crea una nueva función en `tools/` con el decorador `@mcp.tool()`
-2. Reinicia el servidor
-3. Las herramientas aparecerán automáticamente en los clientes
+Reload VS Code: `Ctrl+Shift+P` → "Developer: Reload Window"
 
 ---
 
-**Desarrollado para monitorización de redes Juniper con IA** 🚀
+## Deployment Options
+
+### Option 1: Hybrid (Development)
+
+**InfluxDB + Grafana in Docker, MCP Server local**
+
+```bash
+# Start infrastructure
+docker-compose up -d
+
+# Start MCP server locally
+cd mcp
+pip install -r requirements.txt
+./start_servers.sh
+```
+
+✅ Easy debugging, fast iteration  
+✅ Direct access to Python debugger  
+❌ Requires Python on host
+
+### Option 2: Full Docker (Production)
+
+**Everything in Docker**
+
+```bash
+# Start all services
+docker-compose up -d --build
+
+# View logs
+docker-compose logs -f mcp
+```
+
+✅ Consistent deployment, portable  
+✅ Isolated environments  
+❌ More complex debugging
+
+### Option 3: Remote Infrastructure
+
+**InfluxDB + Grafana on remote server**
+
+Edit `mcp/config.py`:
+```python
+INFLUX_URL = "http://remote-server.com:8086"
+GRAFANA_URL = "http://remote-server.com:3000"
+```
+
+✅ Centralized data, distributed access  
+❌ Network latency, requires exposing services
+
+---
+
+## Project Structure
+
+```
+openntIA/
+├── README.md                   This file
+├── SETUP.md                    Quick setup guide
+├── docker-compose.yaml         Infrastructure (InfluxDB, Grafana, MCP)
+│
+├── mcp/                        MCP Server
+│   ├── server.py              Main MCP server (FastMCP)
+│   ├── mcp_bridge.py          Bridge: stdio ↔ HTTP
+│   ├── api.py                 REST API (testing)
+│   ├── config.py              Configuration
+│   ├── config.example.py      Configuration template
+│   ├── requirements.txt       Python dependencies
+│   ├── start_servers.sh       Start script
+│   ├── verify_setup.py        Setup verification
+│   ├── Dockerfile             Docker image
+│   └── tools/
+│       ├── influx.py          InfluxDB tools
+│       └── grafana.py         Grafana tools
+│
+├── claude_desktop_config.json  Example for Claude
+└── .vscode/
+    └── settings.json           Example for VS Code
+```
+
+---
+
+## Usage Examples
+
+Once configured, ask your AI assistant:
+
+- "What interfaces have the highest bandwidth utilization in the last 24 hours?"
+- "Show me all Grafana dashboards"
+- "What is the CPU and memory usage across all devices?"
+- "How many BGP peers are active on mx960-core1?"
+
+---
+
+## Common Commands
+
+### Docker Management
+
+```bash
+# Start services
+docker-compose up -d
+
+# View status
+docker-compose ps
+
+# View logs
+docker-compose logs -f
+
+# Restart services
+docker-compose restart
+
+# Stop services
+docker-compose down
+```
+
+### MCP Server (Local)
+
+```bash
+# Install dependencies
+pip install -r mcp/requirements.txt
+
+# Start server
+cd mcp && ./start_servers.sh
+
+# Stop server
+pkill -f server.py
+
+# View processes
+ps aux | grep server.py
+```
+
+### Testing
+
+```bash
+# Test REST API
+curl http://localhost:3333/
+
+# List dashboards
+curl http://localhost:3333/grafana/dashboards
+
+# Query InfluxDB
+curl -X POST http://localhost:3333/influx/query \
+  -H "Content-Type: application/json" \
+  -d '{"flux": "from(bucket: \"juniper\") |> range(start: -1h) |> limit(n: 5)"}'
+```
+
+### InfluxDB
+
+```bash
+# Enter CLI
+docker exec -it influxdb influx
+
+# Check health
+curl http://localhost:8086/health
+
+# List measurements
+curl -X POST http://localhost:3333/influx/query \
+  -H "Content-Type: application/json" \
+  -d '{"flux": "import \"influxdata/influxdb/schema\"\nschema.measurements(bucket: \"juniper\")"}'
+```
+
+### Grafana
+
+```bash
+# Open UI
+xdg-open http://localhost:3000
+
+# Login: admin / admin (default)
+
+# List dashboards via API
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  http://localhost:3000/api/search
+```
+
+---
+
+## Troubleshooting
+
+### Containers won't start
+
+```bash
+# Check logs
+docker-compose logs -f
+
+# Restart
+docker-compose restart
+
+# Clean restart
+docker-compose down -v
+docker-compose up -d
+```
+
+### MCP Server can't connect to InfluxDB/Grafana
+
+**If MCP is local:**
+```bash
+# Verify containers are running
+docker-compose ps
+
+# Test connectivity
+curl http://localhost:8086/health
+curl http://localhost:3000/api/health
+
+# Check config.py URLs
+cat mcp/config.py | grep URL
+```
+
+**If MCP is in Docker:**
+```bash
+# Use service names in config
+INFLUX_URL = "http://influxdb:8086"
+GRAFANA_URL = "http://grafana:3000"
+
+# Or use --network host
+docker run --network host ...
+```
+
+### Claude Desktop doesn't show tools
+
+1. Verify MCP server is running:
+   ```bash
+   ps aux | grep server.py
+   ```
+
+2. Check configuration path in `claude_desktop_config.json`
+
+3. Restart Claude Desktop completely
+
+4. Check Claude logs:
+   - macOS: `~/Library/Logs/Claude/`
+   - Linux: `~/.config/Claude/logs/`
+
+### VS Code + Copilot doesn't see tools
+
+1. Install MCP extension: "Model Context Protocol"
+2. Verify `.vscode/settings.json` configuration
+3. Reload VS Code: `Ctrl+Shift+P` → "Reload Window"
+4. Check Output panel for errors
+
+### Connection refused errors
+
+```bash
+# Verify all services are up
+docker-compose ps
+
+# Check ports are open
+sudo netstat -tulpn | grep -E ':(8086|3000|3333|3334)'
+
+# Restart everything
+docker-compose restart
+cd mcp && ./start_servers.sh
+```
+
+---
+
+## Data Backup
+
+### InfluxDB Backup
+
+```bash
+# Create backup
+docker exec influxdb influx backup /tmp/backup -t influx-token
+docker cp influxdb:/tmp/backup ./influxdb-backup-$(date +%Y%m%d)
+```
+
+### Grafana Backup
+
+```bash
+# Backup dashboards and config
+docker exec grafana tar czf /tmp/grafana.tar.gz /var/lib/grafana
+docker cp grafana:/tmp/grafana.tar.gz ./grafana-backup-$(date +%Y%m%d).tar.gz
+```
+
+---
+
+## Security Notes
+
+⚠️ **Important:**
+- Don't expose MCP server to the internet without authentication
+- Store credentials in environment variables or secure vaults
+- Use HTTPS in production
+- Limit Flux query complexity to prevent resource exhaustion
+- Regularly update Docker images
+
+---
+
+## Ports Reference
+
+| Service | Port | Description | Required |
+|---------|------|-------------|----------|
+| InfluxDB | 8086 | Time-series database API | Yes |
+| Grafana | 3000 | Dashboard UI and API | Yes |
+| MCP Server | 3334 | MCP HTTP/SSE endpoint | Optional |
+| REST API | 3333 | Testing API | Optional |
+
+---
+
+## Development
+
+### Adding New Tools
+
+1. Create function in `mcp/tools/`:
+
+```python
+from mcp.server.fastmcp import FastMCP
+
+@mcp.tool()
+def my_new_tool(param: str) -> dict:
+    """Tool description"""
+    # Implementation
+    return {"result": "data"}
+```
+
+2. Restart MCP server
+3. Tool appears automatically in clients
+
+### Running Tests
+
+```bash
+# Verify setup
+cd mcp
+python3 verify_setup.py
+
+# Test individual components
+python3 -c "from tools.influx import query_influx; print(query_influx('from(bucket: \"juniper\") |> range(start: -1h) |> limit(n: 1)'))"
+```
+
+---
+
+## License
+
+Internal use for network observability purposes.
+
+## Contributing
+
+To add features:
+1. Create new tool functions with `@mcp.tool()` decorator
+2. Update `requirements.txt` if adding dependencies
+3. Document in README.md
+4. Test with both Claude Desktop and VS Code
+
+---
+
+**Network observability powered by AI** 🚀📊🤖
