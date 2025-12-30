@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "observability-mcp": {
+      "command": "python3",
+      "args": ["/home/ubuntu/openntIA/mcp/mcp_bridge.py"],
+      "env": {}
+    }
+  }
+}

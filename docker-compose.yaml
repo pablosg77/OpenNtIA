@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: admin123
+      DOCKER_INFLUXDB_INIT_ORG: network
+      DOCKER_INFLUXDB_INIT_BUCKET: juniper
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: influx-token
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    depends_on:
+      - influxdb
+  mcp:
+    build: ./mcp
+    container_name: observability-mcp
+    ports:
+      - "3333:8000"  # REST API
+      - "3334:3334"  # MCP SSE Server
+    environment:
+      MCP_HTTP_PORT: 8000      
+      UVICORN_HOST: 0.0.0.0
+      UVICORN_PORT: 8000
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: influx-token
+      INFLUX_ORG: network
+      INFLUX_BUCKET: juniper
+      GRAFANA_URL: http://grafana:3000
+      GRAFANA_TOKEN: xxxxxxx
+    depends_on:
+      - influxdb
+      - grafana
+
+volumes:
+  influxdb-data:
+  grafana-data:
+

@@ -1,0 +1,6 @@
+fastmcp
+influxdb-client
+requests
+fastapi
+uvicorn[standard]
+
