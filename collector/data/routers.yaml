@@ -1,0 +1,12 @@
+- hostname: hl4mmt1-301
+  tag: hl4
+- hostname: hl4mmt1-302
+  tag: hl4
+- hostname: hl3mmt1-301
+  tag: hl3
+- hostname: hl3mmt1-302
+  tag: hl3
+- hostname: hl2mmt1-102
+  tag: hl2
+- hostname: hl2mmt1-302
+  tag: hl2
