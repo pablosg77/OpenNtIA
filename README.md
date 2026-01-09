@@ -4,9 +4,14 @@ MCP (Model Context Protocol) server for Juniper network observability with Influ
 
 ## Overview
 
-This project provides an MCP server that allows AI assistants (Claude Desktop, GitHub Copilot) to query network metrics from InfluxDB and manage Grafana dashboards.
+This project provides a complete observability stack for Juniper networks:
 
-**Available Tools:**
+1. **Data Collection**: Automated collection of PFE exceptions from Juniper devices via Telegraf
+2. **Storage**: Time-series data stored in InfluxDB
+3. **Visualization**: Grafana dashboards for metrics analysis
+4. **AI Integration**: MCP server enabling AI assistants (Claude Desktop, GitHub Copilot) to query metrics using natural language
+
+**Available MCP Tools:**
 - `query_influx` - Execute Flux queries against InfluxDB for network metrics
 - `list_dashboards` - List all available Grafana dashboards
 - `get_dashboard` - Get details of a specific Grafana dashboard by UID
@@ -16,61 +21,168 @@ This project provides an MCP server that allows AI assistants (Claude Desktop, G
 ## Architecture
 
 ```
-┌─────────────────┐
-│  Claude Desktop │
-│  GitHub Copilot │
-└────────┬────────┘
-         │ stdio (MCP Protocol)
-         ▼
-┌─────────────────┐
-│  mcp_bridge.py  │  Bridge: stdio ↔ HTTP
-└────────┬────────┘
-         │ HTTP
-         ▼
-┌─────────────────┐
-│   MCP Server    │  FastMCP (Local or Docker)
-│   server.py     │
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-┌────────┐ ┌─────────┐
-│ InfluxDB│ │ Grafana │  [Always Docker]
-│ :8086   │ │ :3000   │
-└─────────┘ └─────────┘
+┌─────────────────────────────────────────────────────────┐
+│                    AI Clients Layer                     │
+│         Claude Desktop  |  GitHub Copilot               │
+└────────────────────┬────────────────────────────────────┘
+                     │ stdio (MCP Protocol)
+┌────────────────────▼────────────────────────────────────┐
+│                   MCP Bridge                            │
+│                 mcp_bridge.py                           │
+└────────────────────┬────────────────────────────────────┘
+                     │ HTTP
+┌────────────────────▼────────────────────────────────────┐
+│                   MCP Server                            │
+│              server.py (FastMCP)                        │
+│         [Local Python or Docker]                        │
+└────────────────────┬────────────────────────────────────┘
+                     │
+        ┌────────────┴──────────────┐
+        ▼                           ▼
+┌──────────────┐            ┌──────────────┐
+│   InfluxDB   │◄───────────│   Telegraf   │
+│   :8086      │            │  (Collector) │
+│   [Docker]   │            │   [Docker]   │
+└──────┬───────┘            └──────▲───────┘
+       │                           │
+       │                           │ SSH (Junos PyEZ)
+       │                           │ Collects PFE exceptions
+       │                           │
+       ▼                           ▼
+┌──────────────┐         ┌────────────────────┐
+│   Grafana    │         │  Juniper Devices   │
+│   :3000      │         │  (MX960, etc.)     │
+│   [Docker]   │         └────────────────────┘
+└──────────────┘
 ```
 
-### Container Strategy
+### Component Breakdown
 
-**Always in Docker:**
-- **InfluxDB** (port 8086) - Time-series database
-- **Grafana** (port 3000) - Visualization dashboards
+**Data Collection (Always Docker):**
+- **Telegraf Collector** - Python script collecting PFE exceptions every 60s
+  - Connects to Juniper devices via SSH (Junos PyEZ)
+  - Executes `show pfe statistics exceptions` per slot
+  - Normalizes and formats data for InfluxDB
+  - Configurable via `telegraf.conf` and `routers.yaml`
 
-**Flexible deployment:**
+**Storage & Visualization (Always Docker):**
+- **InfluxDB** (port 8086) - Time-series database for metrics
+- **Grafana** (port 3000) - Dashboard visualization
+
+**AI Integration (Flexible):**
 - **MCP Server** - Can run locally (Python) or in Docker
   - Local: Better for development, easy debugging
   - Docker: Better for production, portable deployment
 
 ---
 
-## Quick Start
+## Quick Start Guide
 
-### 1. Start Infrastructure (InfluxDB + Grafana)
+Follow these steps in order to set up the complete observability stack:
+
+### Step 1: Start Infrastructure Services
+
+Start InfluxDB, Grafana, and the Telegraf collector:
 
 ```bash
 cd /home/ubuntu/openntIA
 docker-compose up -d
 ```
 
-Verify containers are running:
+Verify all containers are running:
 ```bash
 docker-compose ps
+# Should show: influxdb, grafana, mcp, collector (telegraf)
 ```
 
-### 2. Configure Credentials
+**What happens:**
+- InfluxDB starts on port 8086
+- Grafana starts on port 3000
+- Telegraf collector container starts and waits for configuration
+- MCP server container starts (if using Docker deployment)
+
+### Step 2: Configure Juniper Device Access
+
+Edit the collector configuration files:
+
+```bash
+cd collector/data
+
+# 1. Configure device credentials
+nano credentials.yaml
+```
+
+Add your Juniper device credentials:
+```yaml
+- username: "your-junos-username"
+  password: "your-junos-password"
+```
+
+```bash
+# 2. Configure target routers
+nano routers.yaml
+```
+
+Add your Juniper devices:
+```yaml
+- hostname: "mx960-core1"
+- hostname: "mx960-core2"
+- hostname: "mx480-edge1"
+```
+
+**Security Note**: Store credentials securely. Consider using SSH keys or encrypted vaults in production.
+
+### Step 3: Verify Data Collection
+
+Wait 60 seconds (default collection interval) and check if data is being collected:
+
+```bash
+# Check collector logs
+docker logs -f collector
+
+# Query InfluxDB for collected data
+docker exec influxdb influx query \
+  --org network \
+  --token influx-token \
+  'from(bucket: "juniper") 
+    |> range(start: -5m) 
+    |> filter(fn: (r) => r._measurement == "pfe_exceptions")
+    |> limit(n: 10)'
+```
+
+You should see PFE exception data from your Juniper devices.
+
+### Step 4: Configure InfluxDB and Grafana Access Tokens
+
+**Get InfluxDB Token:**
+1. Open http://localhost:8086
+2. Login with default credentials:
+   - Username: `admin`
+   - Password: `admin123`
+3. Go to **Data** → **API Tokens**
+4. Copy the default token or create a new one
+
+**Get Grafana Token:**
+1. Open http://localhost:3000
+2. Login with default credentials:
+   - Username: `admin`
+   - Password: `admin`
+3. Go to **Configuration** (⚙️) → **API Keys**
+4. Click **New API Key**:
+   - Name: `mcp-server`
+   - Role: **Admin**
+5. Copy the generated token
+
+### Step 5: Configure MCP Server (Local Deployment Only)
+
+**Skip this step if using Docker deployment (recommended).**
+
+For local Python deployment:
 
 ```bash
 cd mcp
+
+# Create configuration file
 cp config.example.py config.py
 nano config.py
 ```
@@ -78,42 +190,138 @@ nano config.py
 Edit with your tokens:
 ```python
 INFLUX_URL = "http://localhost:8086"
-INFLUX_TOKEN = "your-influxdb-token"
+INFLUX_TOKEN = "influx-token"  # Use token from Step 4
 INFLUX_ORG = "network"
 INFLUX_BUCKET = "juniper"
 
 GRAFANA_URL = "http://localhost:3000"
-GRAFANA_TOKEN = "your-grafana-api-key"
+GRAFANA_TOKEN = "your-grafana-api-key"  # Use token from Step 4
 ```
 
-**Get tokens:**
-- InfluxDB: http://localhost:8086 → Data → API Tokens
-- Grafana: http://localhost:3000 → Configuration → API Keys
-
-### 3. Start MCP Server
-
-**Option A: Local (Recommended for development)**
+Install dependencies and start:
 ```bash
-cd mcp
 pip install -r requirements.txt
 ./start_servers.sh
 ```
 
-**Option B: Docker (Recommended for production)**
-```bash
-docker-compose up -d --build
-# MCP server already included in docker-compose.yaml
-```
+### Step 6: Verify MCP Server
 
-### 4. Verify
+Test the MCP server REST API:
 
 ```bash
-# Test REST API
+# List Grafana dashboards
 curl http://localhost:3333/grafana/dashboards
 
-# Test health
+# Query recent PFE exceptions
+curl -X POST http://localhost:3333/influx/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "flux": "from(bucket: \"juniper\") |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"pfe_exceptions\") |> limit(n: 10)"
+  }'
+
+# Check service health
 curl http://localhost:8086/health  # InfluxDB
 curl http://localhost:3000/api/health  # Grafana
+```
+
+### Step 7: Configure AI Client (Optional)
+
+To use with Claude Desktop or GitHub Copilot, see [Client Configuration](#client-configuration) section below.
+
+---
+
+## Project Structure
+
+```
+openntIA/
+├── README.md                   This file
+├── SETUP.md                    Quick setup guide
+├── docker-compose.yaml         Infrastructure services
+│
+├── collector/                  Data Collection
+│   ├── Dockerfile             Telegraf + Python collector
+│   ├── data/
+│   │   ├── credentials.yaml   Junos device credentials
+│   │   ├── routers.yaml       Target devices list
+│   │   ├── pfe_exceptions.py  PFE exception collector script
+│   │   └── telegraf.conf      Telegraf configuration
+│
+├── mcp/                        MCP Server
+│   ├── server.py              Main MCP server (FastMCP)
+│   ├── mcp_bridge.py          Bridge: stdio ↔ HTTP
+│   ├── api.py                 REST API (testing)
+│   ├── config.py              Configuration
+│   ├── config.example.py      Configuration template
+│   ├── requirements.txt       Python dependencies
+│   ├── start_servers.sh       Start script
+│   ├── verify_setup.py        Setup verification
+│   ├── Dockerfile             Docker image
+│   └── tools/
+│       ├── influx.py          InfluxDB tools
+│       └── grafana.py         Grafana tools
+│
+├── claude_desktop_config.json  Example for Claude
+└── .vscode/
+    └── settings.json           Example for VS Code
+```
+
+---
+
+## Data Collection Details
+
+### What Data is Collected
+
+The collector runs every 60 seconds (configurable in `telegraf.conf`) and gathers:
+
+**PFE Exceptions per Slot:**
+- `firewall_discard` - Packets dropped by firewall rules
+- `iif_down` - Input interface down exceptions
+- `unknown_iif` - Unknown input interface
+- `unknown_family` - Unknown protocol family
+- `sw_error` - Software errors
+- `discard_route` - Discarded by routing policy
+- `invalid_stream` - Invalid packet stream
+- And more...
+
+**Collected for each:**
+- Device hostname
+- FPC slot number
+- Exception type
+- Exception count (cumulative counter)
+- Timestamp
+
+### Collection Script
+
+The `pfe_exceptions.py` script:
+1. Reads device list from `routers.yaml`
+2. Connects to each device via SSH (Junos PyEZ)
+3. Executes `show pfe statistics exceptions fpc <N>` for each slot
+4. For MPC1 cards (AFT), uses `show jnh exceptions level terse`
+5. Parses output and extracts non-zero exception counts
+6. Formats data in InfluxDB line protocol
+7. Telegraf reads the output and sends to InfluxDB
+
+### Customizing Collection
+
+**Change collection interval:**
+Edit `collector/data/telegraf.conf`:
+```toml
+[agent]
+  interval = "60s"  # Change to desired interval
+```
+
+**Add more routers:**
+Edit `collector/data/routers.yaml`:
+```yaml
+- hostname: "new-router-1"
+- hostname: "new-router-2"
+```
+
+**Modify script timeout:**
+Edit `collector/data/telegraf.conf`:
+```toml
+[[inputs.exec]]
+  timeout = "600s"  # 10 minutes default
 ```
 
 ---

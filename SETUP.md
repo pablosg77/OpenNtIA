@@ -1,6 +1,6 @@
 # Quick Setup Guide
 
-Get the Observability MCP Server running in 5 minutes.
+Get the complete Juniper Network Observability stack running in 10 minutes.
 
 ---
 
@@ -8,42 +8,108 @@ Get the Observability MCP Server running in 5 minutes.
 
 - Docker & Docker Compose installed
 - Python 3.8+ (if running MCP server locally)
+- SSH access to Juniper devices (MX Series routers)
 - Linux/macOS/WSL2
 
 ---
 
-## Step 1: Start Infrastructure
+## Step 1: Start All Services
 
 ```bash
 cd /home/ubuntu/openntIA
 docker-compose up -d
 ```
 
-Verify:
+This starts:
+- ✅ InfluxDB (time-series database)
+- ✅ Grafana (visualization)
+- ✅ Telegraf Collector (data collection)
+- ✅ MCP Server (AI integration, if using Docker)
+
+Verify all containers are running:
 ```bash
 docker-compose ps
-# Should show influxdb, grafana, and mcp containers running
+# Should show: influxdb, grafana, collector, mcp
 ```
 
 ---
 
-## Step 2: Get API Tokens
+## Step 2: Configure Device Access
+
+### 2.1 Configure Juniper Credentials
+
+```bash
+cd collector/data
+nano credentials.yaml
+```
+
+Add your device credentials:
+```yaml
+- username: "your-junos-username"
+  password: "your-junos-password"
+```
+
+### 2.2 Configure Target Routers
+
+```bash
+nano routers.yaml
+```
+
+List your Juniper devices:
+```yaml
+- hostname: "mx960-core1"
+- hostname: "mx960-core2"
+- hostname: "mx480-edge1"
+```
+
+### 2.3 Restart Collector
+
+```bash
+cd /home/ubuntu/openntIA
+docker-compose restart collector
+```
+
+---
+
+## Step 3: Verify Data Collection
+
+Wait ~60 seconds for first collection cycle, then check:
+
+```bash
+# View collector logs
+docker logs -f collector
+
+# Query InfluxDB for data
+docker exec influxdb influx query \
+  --org network \
+  --token influx-token \
+  'from(bucket: "juniper") 
+    |> range(start: -5m) 
+    |> filter(fn: (r) => r._measurement == "pfe_exceptions")
+    |> limit(n: 10)'
+```
+
+You should see PFE exception data from your devices.
+
+---
+
+## Step 4: Get API Tokens (For AI Integration)
 
 ### InfluxDB Token
 
 1. Open http://localhost:8086
-2. Login with credentials from `docker-compose.yaml`:
+2. Login:
    - Username: `admin`
    - Password: `admin123`
 3. Go to **Data** → **API Tokens**
-4. Copy the default token or generate a new one
+4. Copy the token (default: `influx-token`)
 
 ### Grafana Token
 
 1. Open http://localhost:3000
 2. Login:
    - Username: `admin`
-   - Password: `admin` (default)
+   - Password: `admin`
 3. Go to **Configuration** (⚙️) → **API Keys**
 4. Click **New API Key**:
    - Name: `mcp-server`
@@ -52,7 +118,11 @@ docker-compose ps
 
 ---
 
-## Step 3: Configure MCP Server
+## Step 5: Configure MCP Server (Local Only)
+
+**Skip this step if using Docker deployment.**
+
+For local Python deployment:
 
 ```bash
 cd mcp
@@ -60,44 +130,36 @@ cp config.example.py config.py
 nano config.py
 ```
 
-Update these values:
+Update tokens:
 ```python
-INFLUX_TOKEN = "your-influxdb-token-here"
+INFLUX_TOKEN = "influx-token"
 GRAFANA_TOKEN = "your-grafana-token-here"
 ```
 
----
-
-## Step 4: Choose Deployment Mode
-
-### Option A: Local (Development)
-
+Install and start:
 ```bash
-# Install Python dependencies
 pip install -r requirements.txt
-
-# Start MCP server
 ./start_servers.sh
 ```
 
-Verify:
+---
+
+## Step 6: Verify MCP Server
+
+Test the API:
 ```bash
+# List dashboards
 curl http://localhost:3333/grafana/dashboards
-```
 
-### Option B: Docker (Production)
-
-Already running if you used `docker-compose up -d` in Step 1!
-
-Verify:
-```bash
-docker-compose logs mcp
-curl http://localhost:3333/grafana/dashboards
+# Query PFE exceptions
+curl -X POST http://localhost:3333/influx/query \
+  -H "Content-Type: application/json" \
+  -d '{"flux": "from(bucket: \"juniper\") |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"pfe_exceptions\") |> limit(n: 5)"}'
 ```
 
 ---
 
-## Step 5: Configure AI Client
+## Step 7: Configure AI Client (Optional)
 
 ### For Claude Desktop
 
@@ -121,7 +183,6 @@ curl http://localhost:3333/grafana/dashboards
 
 3. Restart Claude Desktop
 
-<<<<<<< HEAD
 4. Verify: Click the tools icon (🔨) - you should see 3 tools:
    - `query_influx`
    - `list_dashboards`
@@ -131,16 +192,7 @@ curl http://localhost:3333/grafana/dashboards
 
 1. Install the **Model Context Protocol** extension in VS Code
 
-2. Create/edit `.vscode/settings.json` in your workspace:
-=======
-4. Verify: Click the tools icon (🔨) - you should see 3 tools
-
-### For VS Code + GitHub Copilot
-
-1. Install the **Model Context Protocol** extension
-
 2. Create/edit `.vscode/settings.json`:
->>>>>>> 013ba98f897e67d9231255144e68d6e1119e8b18
 ```json
 {
   "mcp.servers": {
@@ -155,82 +207,65 @@ curl http://localhost:3333/grafana/dashboards
 
 3. Reload VS Code: `Ctrl+Shift+P` → "Developer: Reload Window"
 
-<<<<<<< HEAD
 4. Verify: Open Copilot Chat and ask "List Grafana dashboards"
 
-=======
->>>>>>> 013ba98f897e67d9231255144e68d6e1119e8b18
 ---
 
-## Step 6: Test It!
+## Step 8: Test with AI
 
 Ask your AI assistant:
 
-<<<<<<< HEAD
-```
-"What interfaces have the highest bandwidth utilization in the last 24 hours?"
-```
-
-```
-"Show me all available Grafana dashboards"
-```
-
-```
-"What is the CPU and memory usage of all devices?"
-```
+- **"Show me the PFE exception rate for all devices in the last hour"**
+- **"Which device has the highest rate of firewall_discard exceptions?"**
+- **"List all Grafana dashboards"**
+- **"Show me devices with sw_error exceptions greater than 50/min"**
 
 ---
 
 ## Quick Commands Reference
 
 ```bash
-# Start everything
+# Start all services
 docker-compose up -d
-cd mcp && ./start_servers.sh
+
+# View all logs
+docker-compose logs -f
+
+# View specific service logs
+docker logs -f collector
+docker logs -f influxdb
+docker logs -f grafana
+docker logs -f mcp
+
+# Restart collector after config changes
+docker-compose restart collector
 
 # Stop everything
 docker-compose down
-pkill -f server.py
-=======
-- "What interfaces have the highest bandwidth utilization in the last 24 hours?"
-- "Show me all available Grafana dashboards"
-- "What is the CPU and memory usage of all devices?"
-
----
-
-## Quick Commands
-
-```bash
-# Start everything
-docker-compose up -d && cd mcp && ./start_servers.sh
-
-# Stop everything
-docker-compose down && pkill -f server.py
->>>>>>> 013ba98f897e67d9231255144e68d6e1119e8b18
-
-# View logs
-docker-compose logs -f
-
-<<<<<<< HEAD
-# Restart
-docker-compose restart
 
 # Check status
 docker-compose ps
-ps aux | grep server.py
 
-# Test API
-curl http://localhost:3333/grafana/dashboards
-curl http://localhost:8086/health
-curl http://localhost:3000/api/health
-=======
-# Check status
-docker-compose ps && ps aux | grep server.py
+# Test data collection
+docker exec influxdb influx query \
+  --org network --token influx-token \
+  'from(bucket: "juniper") |> range(start: -5m) |> limit(n: 10)'
 
-# Test API
+# Test MCP server
 curl http://localhost:3333/grafana/dashboards
->>>>>>> 013ba98f897e67d9231255144e68d6e1119e8b18
 ```
+
+---
+
+## Configuration Files Reference
+
+| File | Purpose | When to Edit |
+|------|---------|--------------|
+| `collector/data/credentials.yaml` | Junos SSH credentials | Initial setup |
+| `collector/data/routers.yaml` | Target device list | Add/remove devices |
+| `collector/data/telegraf.conf` | Collection interval | Change frequency |
+| `mcp/config.py` | API tokens (local only) | MCP server config |
+| `docker-compose.yaml` | Service orchestration | Change ports/env vars |
 
 ---
 
@@ -263,28 +298,31 @@ docker-compose logs mcp
 docker-compose restart mcp
 ```
 
-### Claude Desktop doesn't show tools
-1. Verify MCP server is running
-2. Check path in `claude_desktop_config.json` is correct
-3. Completely restart Claude Desktop (quit, not just close)
-4. Check logs in Claude's logs folder
+### No data being collected
+```bash
+# Check collector logs
+docker logs -f collector
 
-### VS Code doesn't see tools
-1. Install "Model Context Protocol" extension
-2. Verify `.vscode/settings.json` path is correct
-3. Reload window: `Ctrl+Shift+P` → "Reload Window"
-4. Check VS Code Output panel for errors
+# Verify device connectivity
+docker exec collector ping <router-hostname>
 
----
+# Check credentials
+cat collector/data/credentials.yaml
+cat collector/data/routers.yaml
 
-## Configuration Files Quick Reference
+# Restart collector
+docker-compose restart collector
+```
 
-**InfluxDB**
-- URL: http://localhost:8086
-- Org: `network`
-- Bucket: `juniper`
-- Token: Get from InfluxDB UI
-=======
+### Can't connect to InfluxDB/Grafana
+```bash
+# Verify containers are running
+docker-compose ps
+
+# Check ports
+sudo netstat -tulpn | grep -E ':(8086|3000)'
+```
+
 ### MCP server not responding
 ```bash
 # If local: restart
@@ -292,57 +330,41 @@ cd mcp && ./start_servers.sh
 
 # If Docker: check logs
 docker-compose logs mcp
+docker-compose restart mcp
 ```
 
 ### Claude Desktop doesn't show tools
 1. Verify MCP server is running: `ps aux | grep server.py`
 2. Check path in config file is correct
-3. Completely restart Claude Desktop
+3. Completely restart Claude Desktop (quit, not just close window)
+4. Check Claude logs folder for errors
+
+### Data collection script errors
+```bash
+# Test script manually
+docker exec collector python3 /telegraf/pfe_exceptions.py
+
+# Check Python dependencies
+docker exec collector pip list
+
+# Rebuild collector
+docker-compose up -d --build collector
+```
 
 ---
 
-## Configuration Reference
-
-**InfluxDB**
-- URL: http://localhost:8086
-- Org: `network` | Bucket: `juniper`
->>>>>>> 013ba98f897e67d9231255144e68d6e1119e8b18
-
-**Grafana**
-- URL: http://localhost:3000
-- Login: `admin` / `admin`
-<<<<<<< HEAD
-- Token: Create from Configuration → API Keys
-
-**MCP Server**
-- REST API: http://localhost:3333
-- MCP Protocol: Port 3334
-=======
-
-**MCP Server**
-- REST API: http://localhost:3333
->>>>>>> 013ba98f897e67d9231255144e68d6e1119e8b18
-- Config: `mcp/config.py`
-
----
-
-<<<<<<< HEAD
 ## Next Steps
 
-- Read full documentation: [`README.md`](README.md)
-- Add custom queries to `mcp/tools/influx.py`
-- Create Grafana dashboards for your metrics
-- Explore Flux query language: https://docs.influxdata.com/flux/
+- Create Grafana dashboards for PFE exceptions
+- Set up alerts for high exception rates
+- Add more data collectors (BGP, interfaces, system resources)
+- Explore Flux queries for advanced analysis
 
 ---
 
-## Need Help?
-
-Check the full troubleshooting section in [`README.md`](README.md#troubleshooting)
-
----
-
-**You're ready to query your network with AI!** 🚀
-=======
 **For full documentation, see [`README.md`](README.md)**
->>>>>>> 013ba98f897e67d9231255144e68d6e1119e8b18
+
+**Questions about PFE exceptions?** Ask your AI assistant:
+- "Show me devices with unknown_family exceptions"
+- "What's the rate of sw_error per device?"
+- "Which slots have the most exceptions?"
