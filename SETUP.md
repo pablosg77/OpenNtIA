@@ -121,13 +121,16 @@ curl http://localhost:3333/grafana/dashboards
 
 3. Restart Claude Desktop
 
-4. Verify: Click the tools icon (🔨) - you should see 3 tools
+4. Verify: Click the tools icon (🔨) - you should see 3 tools:
+   - `query_influx`
+   - `list_dashboards`
+   - `get_dashboard`
 
 ### For VS Code + GitHub Copilot
 
-1. Install the **Model Context Protocol** extension
+1. Install the **Model Context Protocol** extension in VS Code
 
-2. Create/edit `.vscode/settings.json`:
+2. Create/edit `.vscode/settings.json` in your workspace:
 ```json
 {
   "mcp.servers": {
@@ -142,35 +145,53 @@ curl http://localhost:3333/grafana/dashboards
 
 3. Reload VS Code: `Ctrl+Shift+P` → "Developer: Reload Window"
 
+4. Verify: Open Copilot Chat and ask "List Grafana dashboards"
+
 ---
 
 ## Step 6: Test It!
 
 Ask your AI assistant:
 
-- "What interfaces have the highest bandwidth utilization in the last 24 hours?"
-- "Show me all available Grafana dashboards"
-- "What is the CPU and memory usage of all devices?"
+```
+"What interfaces have the highest bandwidth utilization in the last 24 hours?"
+```
+
+```
+"Show me all available Grafana dashboards"
+```
+
+```
+"What is the CPU and memory usage of all devices?"
+```
 
 ---
 
-## Quick Commands
+## Quick Commands Reference
 
 ```bash
 # Start everything
-docker-compose up -d && cd mcp && ./start_servers.sh
+docker-compose up -d
+cd mcp && ./start_servers.sh
 
 # Stop everything
-docker-compose down && pkill -f server.py
+docker-compose down
+pkill -f server.py
 
 # View logs
 docker-compose logs -f
 
+# Restart
+docker-compose restart
+
 # Check status
-docker-compose ps && ps aux | grep server.py
+docker-compose ps
+ps aux | grep server.py
 
 # Test API
 curl http://localhost:3333/grafana/dashboards
+curl http://localhost:8086/health
+curl http://localhost:3000/api/health
 ```
 
 ---
@@ -183,36 +204,73 @@ docker-compose logs -f
 docker-compose down -v && docker-compose up -d
 ```
 
+### Can't connect to InfluxDB/Grafana
+```bash
+# Verify containers are running
+docker-compose ps
+
+# Check ports
+sudo netstat -tulpn | grep -E ':(8086|3000)'
+```
+
 ### MCP server not responding
 ```bash
-# If local: restart
+# If running locally
+ps aux | grep server.py
 cd mcp && ./start_servers.sh
 
-# If Docker: check logs
+# If running in Docker
 docker-compose logs mcp
+docker-compose restart mcp
 ```
 
 ### Claude Desktop doesn't show tools
-1. Verify MCP server is running: `ps aux | grep server.py`
-2. Check path in config file is correct
-3. Completely restart Claude Desktop
+1. Verify MCP server is running
+2. Check path in `claude_desktop_config.json` is correct
+3. Completely restart Claude Desktop (quit, not just close)
+4. Check logs in Claude's logs folder
+
+### VS Code doesn't see tools
+1. Install "Model Context Protocol" extension
+2. Verify `.vscode/settings.json` path is correct
+3. Reload window: `Ctrl+Shift+P` → "Reload Window"
+4. Check VS Code Output panel for errors
 
 ---
 
-## Configuration Reference
+## Configuration Files Quick Reference
 
 **InfluxDB**
 - URL: http://localhost:8086
-- Org: `network` | Bucket: `juniper`
+- Org: `network`
+- Bucket: `juniper`
+- Token: Get from InfluxDB UI
 
 **Grafana**
 - URL: http://localhost:3000
 - Login: `admin` / `admin`
+- Token: Create from Configuration → API Keys
 
 **MCP Server**
 - REST API: http://localhost:3333
+- MCP Protocol: Port 3334
 - Config: `mcp/config.py`
 
 ---
 
-**For full documentation, see [`README.md`](README.md)**
+## Next Steps
+
+- Read full documentation: [`README.md`](README.md)
+- Add custom queries to `mcp/tools/influx.py`
+- Create Grafana dashboards for your metrics
+- Explore Flux query language: https://docs.influxdata.com/flux/
+
+---
+
+## Need Help?
+
+Check the full troubleshooting section in [`README.md`](README.md#troubleshooting)
+
+---
+
+**You're ready to query your network with AI!** 🚀
