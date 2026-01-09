@@ -47,8 +47,16 @@ services:
     depends_on:
       - influxdb
       - grafana
+  telegraf:
+    build: ./collector
+    container_name: collector
+    environment:
+      INFLUX_TOKEN: influx-token # todo : use .env instead
+    volumes:
+      - ./collector/data/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - ./collector/data:/telegraf
+      - /etc/hosts:/etc/hosts:ro # todo: use another approach
 
 volumes:
   influxdb-data:
   grafana-data:
-
