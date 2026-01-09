@@ -122,7 +122,7 @@ def get_pfe_exception(i):
             for exc_type, value in stats.items():
                 exception = normalize_exception(exc_type)
                 line = (
-                    f"pfe_exceptions,"
+                    f"pfe,"
                     f"device={i},"
                     f"slot={f},"
                     f"exception={exception} "
