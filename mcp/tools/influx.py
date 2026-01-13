@@ -161,11 +161,18 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                 key = (record.values.get("device"), 
                        record.values.get("slot"), 
                        record.values.get("exception"))
+                value = record.values.get("_value")
+                time = record.values.get("_time")
+                
+                # Skip if value is None or time is missing
+                if value is None or time is None:
+                    continue
+                
                 if key not in data_by_key:
                     data_by_key[key] = []
                 data_by_key[key].append({
-                    "time": record.values.get("_time"),
-                    "value": record.values.get("_value", 0)
+                    "time": time,
+                    "value": value
                 })
         
         for (device, slot, exception), samples in data_by_key.items():
@@ -181,18 +188,22 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
             
             # Find sequences where we go from near-zero to sustained >= 1 exc/s
             for i in range(len(samples) - min_consecutive_samples):
-                # Check if starting point is near zero
-                if samples[i]["value"] < 0.1:
+                # Check if starting point is near zero (and not None)
+                if samples[i]["value"] is not None and samples[i]["value"] < 0.1:
                     # Check next min_consecutive_samples
                     window = samples[i+1:i+1+min_consecutive_samples]
                     
-                    # ALL samples in window must be >= 1.0 exc/s
-                    all_above_threshold = all(s["value"] >= 1.0 for s in window)
+                    # Filter out None values and check if ALL remaining samples >= 1.0 exc/s
+                    valid_window = [s for s in window if s["value"] is not None]
+                    if len(valid_window) < min_consecutive_samples:
+                        continue  # Not enough valid samples
+                    
+                    all_above_threshold = all(s["value"] >= 1.0 for s in valid_window)
                     
                     if all_above_threshold:
-                        avg_rate = sum(s["value"] for s in window) / len(window)
+                        avg_rate = sum(s["value"] for s in valid_window) / len(valid_window)
                         # Get timestamp of first sample above threshold
-                        first_above_time = window[0]["time"]
+                        first_above_time = valid_window[0]["time"]
                         state = severity_map.get(exception, "LOW")
                         details = f"New exception: ~0→{avg_rate:.2f} exc/s ({min_consecutive_samples} consecutive samples >= 1 exc/s)"
                         
@@ -249,6 +260,10 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                 value = record.values.get("_value", 0)
                 time = record.values.get("_time")
                 
+                # Skip if value is None or invalid
+                if value is None:
+                    continue
+                
                 if key not in baseline_by_key:
                     baseline_by_key[key] = []
                 baseline_by_key[key].append({"value": value, "time": time})
@@ -262,6 +277,10 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                 value = record.values.get("_value", 0)
                 time = record.values.get("_time")
                 
+                # Skip if value is None or invalid
+                if value is None:
+                    continue
+                
                 if key not in recent_by_key:
                     recent_by_key[key] = []
                 recent_by_key[key].append({"value": value, "time": time})
@@ -274,15 +293,19 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
             baseline_data = baseline_by_key[key]
             recent_data = recent_by_key[key]
             
-            # Extract values for statistics
-            baseline_values = [x["value"] for x in baseline_data]
-            recent_values = [x["value"] for x in recent_data]
+            # Extract values for statistics - filter out None values
+            baseline_values = [x["value"] for x in baseline_data if x["value"] is not None]
+            recent_values = [x["value"] for x in recent_data if x["value"] is not None]
+            
+            # Skip if no valid data
+            if not baseline_values or not recent_values:
+                continue
             
             baseline_mean = statistics.mean(baseline_values)
             baseline_std = statistics.stdev(baseline_values) if len(baseline_values) > 1 else 0
             recent_max = max(recent_values)
             # Get timestamp of max value
-            recent_max_entry = max(recent_data, key=lambda x: x["value"])
+            recent_max_entry = max((x for x in recent_data if x["value"] is not None), key=lambda x: x["value"])
             recent_max_time = recent_max_entry["time"]
             
             # Spike: recent max > baseline_mean + 3*std AND at least 2x increase
@@ -319,9 +342,13 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
             if len(recent_data) < min_consecutive_samples:
                 continue
             
-            # Extract values for statistics
-            baseline_values = [x["value"] for x in baseline_data]
-            recent_values = [x["value"] for x in recent_data]
+            # Extract values for statistics - filter out None values
+            baseline_values = [x["value"] for x in baseline_data if x["value"] is not None]
+            recent_values = [x["value"] for x in recent_data if x["value"] is not None]
+            
+            # Skip if no valid data
+            if not baseline_values or not recent_values:
+                continue
             
             baseline_mean = statistics.mean(baseline_values)
             baseline_std = statistics.stdev(baseline_values) if len(baseline_values) > 1 else 0
@@ -344,14 +371,19 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
             
             if condition_a or condition_b or condition_c:
                 # Check if it's sustained (not just a spike)
-                sustained_count = sum(1 for x in recent_data if x["value"] > baseline_mean)
-                sustained_pct = (sustained_count / len(recent_data)) * 100
+                # Filter out None values when counting sustained samples
+                valid_recent_data = [x for x in recent_data if x["value"] is not None]
+                if not valid_recent_data:
+                    continue
+                
+                sustained_count = sum(1 for x in valid_recent_data if x["value"] > baseline_mean)
+                sustained_pct = (sustained_count / len(valid_recent_data)) * 100
                 
                 if sustained_pct >= 70:  # At least 70% of samples above baseline
                     increase_pct = ((recent_mean - baseline_mean) / max(baseline_mean, 0.01)) * 100
                     
-                    # Get timestamp of first sample above baseline
-                    first_above = next((x for x in recent_data if x["value"] > baseline_mean), recent_data[0])
+                    # Get timestamp of first sample above baseline (with valid value)
+                    first_above = next((x for x in valid_recent_data if x["value"] > baseline_mean), valid_recent_data[0])
                     first_above_time = first_above["time"]
                     
                     # Determine which condition triggered
