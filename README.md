@@ -13,6 +13,7 @@ This project provides a complete observability stack for Juniper networks:
 
 **Available MCP Tools:**
 - `query_influx` - Execute Flux queries against InfluxDB for network metrics
+- `check_suspicious_exceptions` - Detect PFE exception anomalies with 3 intelligent rules ⭐ NEW
 - `list_dashboards` - List all available Grafana dashboards
 - `get_dashboard` - Get details of a specific Grafana dashboard by UID
 
@@ -328,6 +329,87 @@ Edit `collector/data/telegraf.conf`:
 
 ## Client Configuration
 
+### VS Code + GitHub Copilot (Recommended for Development)
+
+**Important: MCP configuration can be stored in two locations. We use global configuration to avoid confusion.**
+
+#### Global Configuration (Recommended)
+
+The MCP server is configured in `~/.vscode/mcp-servers.json` (global for all workspaces):
+
+```bash
+# Create or edit the global configuration file
+mkdir -p ~/.vscode
+cat > ~/.vscode/mcp-servers.json << 'EOF'
+{
+  "mcpServers": {
+    "observability-mcp": {
+      "command": "python3",
+      "args": ["/home/ubuntu/openntIA/mcp/mcp_bridge.py"],
+      "env": {
+        "MCP_SERVER_URL": "http://localhost:3333"
+      }
+    }
+  }
+}
+EOF
+```
+
+**Why global configuration?**
+- ✅ Works across all your VS Code workspaces
+- ✅ No need to configure each project separately
+- ✅ Won't create conflicts with project-specific settings
+- ✅ Absolute paths work from any workspace
+
+**Note:** This project includes `.vscode/settings.json` as an example, but the active configuration is in `~/.vscode/mcp-servers.json`.
+
+#### Setup Steps:
+
+1. **Start the infrastructure:**
+   ```bash
+   cd /home/ubuntu/openntIA
+   docker-compose up -d
+   ```
+
+2. **Create the global MCP configuration** (command above)
+
+3. **Reload VS Code**: `Ctrl+Shift+P` → "Developer: Reload Window"
+
+4. **Verify Tools**: Click the 🔨 icon in GitHub Copilot Chat sidebar
+
+5. **You should see 4 tools:**
+   - `query_influx` - Execute Flux queries against InfluxDB
+   - `check_suspicious_exceptions` - Detect PFE exception anomalies ⭐
+   - `list_dashboards` - List available Grafana dashboards
+   - `get_dashboard` - Get dashboard details by UID
+
+#### Test the Integration:
+
+Open GitHub Copilot Chat (`Ctrl+Alt+I`) and try:
+```
+"Detecta excepciones sospechosas en la última hora"
+"Muéstrame los dispositivos con sw_error"
+"Lista los dashboards de Grafana"
+"Query PFE exceptions in the last 24 hours"
+```
+
+#### Troubleshooting:
+
+**Tools don't appear?**
+1. Verify MCP server is running: `curl http://localhost:3333/`
+2. Check configuration path: `cat ~/.vscode/mcp-servers.json`
+3. Completely reload VS Code: Close all windows and reopen
+4. Check VS Code Output panel: View → Output → "Model Context Protocol"
+
+**"Command not found" error?**
+- Update the `command` path to your Python installation:
+  ```bash
+  which python3  # Get the full path
+  ```
+- Update the `args` path to match your clone location
+
+---
+
 ### Claude Desktop
 
 Edit configuration file:
@@ -342,30 +424,17 @@ Add:
     "observability-mcp": {
       "command": "python3",
       "args": ["/home/ubuntu/openntIA/mcp/mcp_bridge.py"],
-      "env": {}
+      "env": {
+        "MCP_SERVER_URL": "http://localhost:3333"
+      }
     }
   }
 }
 ```
 
-Restart Claude Desktop and verify tools appear (🔨 icon).
+**Important:** Update `/home/ubuntu/openntIA` to match your actual clone path.
 
-### VS Code + GitHub Copilot
-
-Create/edit `.vscode/settings.json`:
-```json
-{
-  "mcp.servers": {
-    "observability-mcp": {
-      "command": "python3",
-      "args": ["/home/ubuntu/openntIA/mcp/mcp_bridge.py"],
-      "cwd": "/home/ubuntu/openntIA/mcp"
-    }
-  }
-}
-```
-
-Reload VS Code: `Ctrl+Shift+P` → "Developer: Reload Window"
+Restart Claude Desktop **completely** (quit, not just close window) and verify tools appear (🔨 icon).
 
 ---
 
@@ -453,10 +522,47 @@ openntIA/
 
 Once configured, ask your AI assistant:
 
+### Network Monitoring Queries
 - "What interfaces have the highest bandwidth utilization in the last 24 hours?"
 - "Show me all Grafana dashboards"
 - "What is the CPU and memory usage across all devices?"
 - "How many BGP peers are active on mx960-core1?"
+
+### PFE Exception Analysis ⭐ NEW
+- **"Detecta excepciones sospechosas en la última hora"**
+- **"Show me devices with sw_error exceptions"**
+- **"Are there any critical exceptions right now?"**
+- **"Check for firewall_discard spikes in the last 6 hours"**
+
+#### About `check_suspicious_exceptions`
+
+This AI-powered tool analyzes PFE exceptions using 3 intelligent detection rules:
+
+**Rule 1: New Exceptions**
+- Detects when exceptions go from 0 to ≥1 exc/s and stay elevated
+- Example: A device suddenly starts reporting `sw_error` after being clean
+
+**Rule 2: Spike Detection**
+- Compares current rates against 2-day historical baseline
+- Detects sudden peaks (>2x baseline + 3σ)
+- Example: `firewall_discard` jumps from 0.2 to 1.3 exc/s
+
+**Rule 3: Sustained Behavior Change**
+- Detects gradual but significant increases over baseline
+- Example: `sw_error` rate increases from 4.8 to 6.9 exc/s (+42%)
+
+**Severity Levels:**
+- 🔴 **CRITICAL**: `egress_pfe_unspecified`, `unknown_family`
+- 🟠 **HIGH**: `sw_error`, `unknown_iif`
+- 🟡 **MEDIUM**: `firewall_discard`
+- 🟢 **LOW**: `discard_route`
+
+**Output includes:**
+- Device name and slot number
+- Exception type and severity
+- Detection rule that triggered
+- Timestamp when anomaly was detected
+- Detailed metrics (current rate, baseline, percentage change)
 
 ---
 
@@ -706,6 +812,52 @@ To add features:
 2. Update `requirements.txt` if adding dependencies
 3. Document in README.md
 4. Test with both Claude Desktop and VS Code
+
+---
+
+## Quick Reference Card
+
+### 🚀 Getting Started
+```bash
+docker-compose up -d                    # Start all services
+curl http://localhost:3333/             # Verify MCP server
+```
+
+### 🔧 MCP Configuration (VS Code)
+```bash
+# Create global config (one-time setup)
+mkdir -p ~/.vscode
+cat > ~/.vscode/mcp-servers.json << 'EOF'
+{
+  "mcpServers": {
+    "observability-mcp": {
+      "command": "python3",
+      "args": ["/home/ubuntu/openntIA/mcp/mcp_bridge.py"],
+      "env": {"MCP_SERVER_URL": "http://localhost:3333"}
+    }
+  }
+}
+EOF
+```
+
+### 🎯 AI Query Examples
+```
+"Detecta excepciones sospechosas en la última hora"
+"Show me devices with sw_error > 5 exc/s"
+"List Grafana dashboards"
+"Query PFE exceptions for hl4mmt1-301"
+```
+
+### 📊 Available Tools (4)
+1. **`query_influx`** - Execute Flux queries
+2. **`check_suspicious_exceptions`** - AI-powered anomaly detection ⭐
+3. **`list_dashboards`** - List Grafana dashboards  
+4. **`get_dashboard`** - Get dashboard details
+
+### 🔗 Service URLs
+- InfluxDB UI: http://localhost:8086 (admin/admin123)
+- Grafana UI: http://localhost:3000 (admin/admin)
+- MCP API: http://localhost:3333
 
 ---
 
