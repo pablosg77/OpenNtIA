@@ -55,8 +55,9 @@ def get_dashboard(uid: str) -> dict:
 
 
 # MCP tool wrappers - Se registran automáticamente en el servidor MCP
-try:
-    from server import mcp
+# Estas funciones se importan en server.py después de crear la instancia mcp
+def register_tools(mcp):
+    """Register all Grafana tools with the MCP server"""
     
     @mcp.tool()
     def mcp_list_dashboards() -> dict:
@@ -80,6 +81,4 @@ try:
         variables, and visualization settings.
         """
         return get_dashboard(uid)
-except ImportError:
-    pass  # Skip MCP registration if not available
 

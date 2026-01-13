@@ -15,7 +15,10 @@ from mcp.server.fastmcp import FastMCP
 # Create FastMCP server instance
 mcp = FastMCP("observability-mcp")
 
-# Import tools after server creation
-# Los decoradores @mcp.tool() registran automáticamente las herramientas
+# Import and register tools
 import tools.influx
 import tools.grafana
+
+# Register all tools with the mcp instance
+tools.influx.register_tools(mcp)
+tools.grafana.register_tools(mcp)

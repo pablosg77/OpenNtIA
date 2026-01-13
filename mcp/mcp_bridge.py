@@ -27,6 +27,18 @@ def call_tool(tool_name: str, args: Dict[str, Any]) -> Any:
             response.raise_for_status()
             return response.json()
         
+        elif tool_name in ['check_suspicious_exceptions', 'mcp_check_suspicious_exceptions']:
+            response = requests.post(
+                f'{MCP_SERVER_URL}/influx/check_suspicious',
+                json={
+                    'lookback_hours': args.get('lookback_hours', 1),
+                    'min_consecutive_samples': args.get('min_consecutive_samples', 3)
+                },
+                timeout=60
+            )
+            response.raise_for_status()
+            return response.json()
+        
         elif tool_name in ['list_dashboards', 'mcp_list_dashboards']:
             response = requests.get(
                 f'{MCP_SERVER_URL}/grafana/dashboards',
@@ -91,6 +103,25 @@ def handle_request(request: Dict[str, Any]) -> Dict[str, Any]:
                                 }
                             },
                             'required': ['flux']
+                        }
+                    },
+                    {
+                        'name': 'check_suspicious_exceptions',
+                        'description': 'Detect suspicious PFE exception patterns using 3 rules: (1) New exceptions 0→>=1 exc/s sustained, (2) Spike vs 2-day baseline, (3) Sustained behavior change. Returns table with device, exception, slot, state (CRITICAL/HIGH/MEDIUM/LOW), rule, detected_at timestamp, and details.',
+                        'inputSchema': {
+                            'type': 'object',
+                            'properties': {
+                                'lookback_hours': {
+                                    'type': 'integer',
+                                    'description': 'Hours to analyze for recent period (default: 1)',
+                                    'default': 1
+                                },
+                                'min_consecutive_samples': {
+                                    'type': 'integer',
+                                    'description': 'Minimum consecutive samples to confirm anomaly (default: 3)',
+                                    'default': 3
+                                }
+                            }
                         }
                     },
                     {
