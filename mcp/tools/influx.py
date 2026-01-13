@@ -7,9 +7,59 @@ almacenadas en InfluxDB usando el lenguaje Flux.
 """
 
 from influxdb_client import InfluxDBClient
-from config import INFLUX_URL, INFLUX_TOKEN, INFLUX_ORG, INFLUX_BUCKET
+from config import INFLUX_URL, INFLUX_TOKEN, INFLUX_ORG, INFLUX_BUCKET, GRAFANA_URL
 from typing import Dict, List
 import statistics
+from datetime import datetime, timedelta
+from urllib.parse import urlencode
+
+
+def generate_grafana_dashboard_url(device: str, exception: str, slot: str, detected_at: str, lookback_hours: int = 1, dashboard_uid: str = "ef9xzro0ybu9sd") -> str:
+    """
+    Generate direct Grafana dashboard URL with filters and appropriate time range
+    
+    Args:
+        device: Device hostname
+        exception: Exception type
+        slot: FPC slot number
+        detected_at: Timestamp when anomaly was detected
+        lookback_hours: Hours to look back for visualization (default: 1)
+        dashboard_uid: Dashboard UID (default: ef9xzro0ybu9sd for pfe-exceptions)
+        
+    Returns:
+        str: Complete Grafana dashboard URL with all parameters
+    """
+    try:
+        # Parse detected_at timestamp
+        detected_time = datetime.fromisoformat(detected_at.replace('+00:00', ''))
+        
+        # Calculate time range - show more context (2 days back to see baseline)
+        # This ensures the anomaly is visible in context
+        from_time = "now-2d"  # 2 days back
+        to_time = "now"
+        
+        # Use localhost:3000 instead of container name for browser access
+        grafana_public_url = GRAFANA_URL.replace('http://grafana:', 'http://localhost:')
+        
+        # Build dashboard URL with all parameters
+        params = {
+            'orgId': '1',
+            'var-device': device,
+            'var-exception': exception,
+            'var-slot': slot,
+            'from': from_time,
+            'to': to_time,
+            'refresh': '10s'
+        }
+        
+        dashboard_url = f"{grafana_public_url}/d/{dashboard_uid}/pfe-exceptions?{urlencode(params)}"
+        
+        return dashboard_url
+        
+    except Exception as e:
+        # Fallback: return simple Grafana home
+        grafana_public_url = GRAFANA_URL.replace('http://grafana:', 'http://localhost:')
+        return f"{grafana_public_url}/"
 
 
 def query_influx(flux: str) -> dict:
@@ -143,14 +193,21 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                         avg_rate = sum(s["value"] for s in window) / len(window)
                         # Get timestamp of first sample above threshold
                         first_above_time = window[0]["time"]
+                        state = severity_map.get(exception, "LOW")
+                        details = f"New exception: ~0→{avg_rate:.2f} exc/s ({min_consecutive_samples} consecutive samples >= 1 exc/s)"
+                        
+                        # Generate Grafana dashboard URL
+                        grafana_url = generate_grafana_dashboard_url(device, exception, str(slot), str(first_above_time), lookback_hours)
+                        
                         suspicious.append({
                             "device": device,
                             "exception": exception,
                             "slot": str(slot),
-                            "state": severity_map.get(exception, "LOW"),
+                            "state": state,
                             "rule": "Rule 1",
                             "detected_at": str(first_above_time),
-                            "details": f"New exception: ~0→{avg_rate:.2f} exc/s ({min_consecutive_samples} consecutive samples >= 1 exc/s)"
+                            "details": details,
+                            "grafana_url": grafana_url
                         })
                         break  # Only report once per key
         
@@ -233,14 +290,21 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
             if recent_max > threshold and recent_max > 0.5:  # At least 0.5 exc/s
                 spike_factor = recent_max / max(baseline_mean, 0.01)  # Avoid division by zero
                 if spike_factor > 2.0:  # At least 2x increase
+                    state = severity_map.get(exception, "LOW")
+                    details = f"Spike: {recent_max:.2f} exc/s (baseline: {baseline_mean:.2f} exc/s, {spike_factor:.1f}x)"
+                    
+                    # Generate Grafana dashboard URL
+                    grafana_url = generate_grafana_dashboard_url(device, exception, str(slot), str(recent_max_time), lookback_hours)
+                    
                     suspicious.append({
                         "device": device,
                         "exception": exception,
                         "slot": str(slot),
-                        "state": severity_map.get(exception, "LOW"),
+                        "state": state,
                         "rule": "Rule 2",
                         "detected_at": str(recent_max_time),
-                        "details": f"Spike: {recent_max:.2f} exc/s (baseline: {baseline_mean:.2f} exc/s, {spike_factor:.1f}x)"
+                        "details": details,
+                        "grafana_url": grafana_url
                     })
         
         # ===== RULE 3: Sustained behavior change =====
@@ -298,14 +362,21 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                     else:
                         condition_met = "significant increase"
                     
+                    state = severity_map.get(exception, "LOW")
+                    details = f"Sustained ({condition_met}): {recent_mean:.2f} exc/s (baseline: {baseline_mean:.2f} exc/s, +{increase_pct:.0f}%, min/max: {recent_min:.2f}/{recent_max:.2f})"
+                    
+                    # Generate Grafana dashboard URL
+                    grafana_url = generate_grafana_dashboard_url(device, exception, str(slot), str(first_above_time), lookback_hours)
+                    
                     suspicious.append({
                         "device": device,
                         "exception": exception,
                         "slot": str(slot),
-                        "state": severity_map.get(exception, "LOW"),
+                        "state": state,
                         "rule": "Rule 3",
                         "detected_at": str(first_above_time),
-                        "details": f"Sustained ({condition_met}): {recent_mean:.2f} exc/s (baseline: {baseline_mean:.2f} exc/s, +{increase_pct:.0f}%, min/max: {recent_min:.2f}/{recent_max:.2f})"
+                        "details": details,
+                        "grafana_url": grafana_url
                     })
     
     # Remove duplicates (same device/slot/exception might trigger multiple rules)
