@@ -344,8 +344,48 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
         
         # ===== RULE 3: Sustained behavior change =====
         for key in recent_by_key:
+            # Check if exception appears with no baseline (new exception that wasn't there before)
+            device, slot, exception = key
+            
             if key not in baseline_by_key or len(baseline_by_key[key]) < 10:
-                continue
+                # SPECIAL CASE: Exception appears with no historical baseline
+                # This catches cases like hold_route that suddenly appear
+                recent_data = recent_by_key[key]
+                if len(recent_data) < min_consecutive_samples:
+                    continue
+                
+                recent_values = [x["value"] for x in recent_data if x["value"] is not None]
+                if not recent_values:
+                    continue
+                
+                recent_mean = statistics.mean(recent_values)
+                
+                # Trigger if sustained rate >= 0.5 exc/s (adaptive threshold)
+                if recent_mean >= 0.5:
+                    recent_min = min(recent_values)
+                    recent_max = max(recent_values)
+                    
+                    # Get first sample
+                    first_sample = next((x for x in recent_data if x["value"] is not None), recent_data[0])
+                    first_time = first_sample["time"]
+                    
+                    state = severity_map.get(exception, "LOW")
+                    details = f"Sustained (new exception, no baseline): {recent_mean:.2f} exc/s (baseline: 0.0 exc/s, min/max: {recent_min:.2f}/{recent_max:.2f})"
+                    
+                    # Generate Grafana dashboard URL
+                    grafana_url = generate_grafana_dashboard_url(device, exception, str(slot), str(first_time), lookback_hours)
+                    
+                    suspicious.append({
+                        "device": device,
+                        "exception": exception,
+                        "slot": str(slot),
+                        "state": state,
+                        "rule": "Rule 3",
+                        "detected_at": str(first_time),
+                        "details": details,
+                        "grafana_url": grafana_url
+                    })
+                continue  # Skip normal Rule 3 processing for this key
             
             device, slot, exception = key
             baseline_data = baseline_by_key[key]
