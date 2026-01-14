@@ -231,43 +231,6 @@ To use with Claude Desktop or GitHub Copilot, see [Client Configuration](#client
 
 ---
 
-## Project Structure
-
-```
-openntIA/
-├── README.md                   This file
-├── SETUP.md                    Quick setup guide
-├── docker-compose.yaml         Infrastructure services
-│
-├── collector/                  Data Collection
-│   ├── Dockerfile             Telegraf + Python collector
-│   ├── data/
-│   │   ├── credentials.yaml   Junos device credentials
-│   │   ├── routers.yaml       Target devices list
-│   │   ├── pfe_exceptions.py  PFE exception collector script
-│   │   └── telegraf.conf      Telegraf configuration
-│
-├── mcp/                        MCP Server
-│   ├── server.py              Main MCP server (FastMCP)
-│   ├── mcp_bridge.py          Bridge: stdio ↔ HTTP
-│   ├── api.py                 REST API (testing)
-│   ├── config.py              Configuration
-│   ├── config.example.py      Configuration template
-│   ├── requirements.txt       Python dependencies
-│   ├── start_servers.sh       Start script
-│   ├── verify_setup.py        Setup verification
-│   ├── Dockerfile             Docker image
-│   └── tools/
-│       ├── influx.py          InfluxDB tools
-│       └── grafana.py         Grafana tools
-│
-├── claude_desktop_config.json  Example for Claude
-└── .vscode/
-    └── settings.json           Example for VS Code
-```
-
----
-
 ## Data Collection Details
 
 ### What Data is Collected
@@ -387,10 +350,10 @@ EOF
 
 Open GitHub Copilot Chat (`Ctrl+Alt+I`) and try:
 ```
-"Detecta excepciones sospechosas en la última hora"
-"Muéstrame los dispositivos con sw_error"
-"Lista los dashboards de Grafana"
-"Query PFE exceptions in the last 24 hours"
+"Detect suspicious exceptions in the last hour"
+"Show me devices with sw_error"
+"List Grafana dashboards"
+"Query PFE exceptions for device hl4mmt1-301"
 ```
 
 #### Troubleshooting:
@@ -522,17 +485,13 @@ openntIA/
 
 Once configured, ask your AI assistant:
 
-### Network Monitoring Queries
-- "What interfaces have the highest bandwidth utilization in the last 24 hours?"
-- "Show me all Grafana dashboards"
-- "What is the CPU and memory usage across all devices?"
-- "How many BGP peers are active on mx960-core1?"
-
-### PFE Exception Analysis ⭐ NEW
-- **"Detecta excepciones sospechosas en la última hora"**
+### PFE Exception Analysis ⭐
+- **"Detect suspicious exceptions in the last hour"**
 - **"Show me devices with sw_error exceptions"**
 - **"Are there any critical exceptions right now?"**
 - **"Check for firewall_discard spikes in the last 6 hours"**
+- **"Query PFE exceptions for device hl4mmt1-301"**
+- **"List available Grafana dashboards"**
 
 #### About `check_suspicious_exceptions`
 
@@ -842,7 +801,7 @@ EOF
 
 ### 🎯 AI Query Examples
 ```
-"Detecta excepciones sospechosas en la última hora"
+"Detect suspicious exceptions in the last hour"
 "Show me devices with sw_error > 5 exc/s"
 "List Grafana dashboards"
 "Query PFE exceptions for hl4mmt1-301"
