@@ -134,7 +134,8 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
         "sw_error": "HIGH",
         "unknown_iif": "HIGH",
         "firewall_discard": "MEDIUM",
-        "discard_route": "LOW"
+        "discard_route": "LOW",
+        "hold_route":"MEDIUM"
     }
     
     # Severity order for comparison
@@ -188,30 +189,35 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
             # Sort by time
             samples.sort(key=lambda x: x["time"])
             
-            # Rule 1: Check for X consecutive samples >= 1pps after starting from 0
-            # derivative() returns rate per second, so we check for >= 1.0 exceptions/second
-            # Pattern: starts near zero, then X consecutive samples ALL >= 1.0 exc/s
+            # Rule 1: Check for X consecutive samples with sustained rate after starting from 0
+            # Pattern: starts near zero, then X consecutive samples ALL above adaptive threshold
+            # Adaptive threshold: 0.5 exc/s OR 1.0 exc/s depending on severity
             
-            # Find sequences where we go from near-zero to sustained >= 1 exc/s
+            # Determine threshold based on severity
+            # CRITICAL/HIGH exceptions: 0.5 exc/s (more sensitive)
+            # MEDIUM/LOW exceptions: 0.5 exc/s (also more sensitive to catch cases like hold_route)
+            adaptive_threshold = 0.5  # More sensitive threshold
+            
+            # Find sequences where we go from near-zero to sustained elevated rate
             for i in range(len(samples) - min_consecutive_samples):
                 # Check if starting point is near zero (and not None)
                 if samples[i]["value"] is not None and samples[i]["value"] < 0.1:
                     # Check next min_consecutive_samples
                     window = samples[i+1:i+1+min_consecutive_samples]
                     
-                    # Filter out None values and check if ALL remaining samples >= 1.0 exc/s
+                    # Filter out None values and check if ALL remaining samples >= threshold
                     valid_window = [s for s in window if s["value"] is not None]
                     if len(valid_window) < min_consecutive_samples:
                         continue  # Not enough valid samples
                     
-                    all_above_threshold = all(s["value"] >= 1.0 for s in valid_window)
+                    all_above_threshold = all(s["value"] >= adaptive_threshold for s in valid_window)
                     
                     if all_above_threshold:
                         avg_rate = sum(s["value"] for s in valid_window) / len(valid_window)
                         # Get timestamp of first sample above threshold
                         first_above_time = valid_window[0]["time"]
                         state = severity_map.get(exception, "LOW")
-                        details = f"New exception: ~0→{avg_rate:.2f} exc/s ({min_consecutive_samples} consecutive samples >= 1 exc/s)"
+                        details = f"New exception: ~0→{avg_rate:.2f} exc/s ({min_consecutive_samples} consecutive samples >= {adaptive_threshold} exc/s)"
                         
                         # Generate Grafana dashboard URL
                         grafana_url = generate_grafana_dashboard_url(device, exception, str(slot), str(first_above_time), lookback_hours)
