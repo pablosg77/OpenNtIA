@@ -13,7 +13,7 @@ This project provides a complete observability stack for Juniper networks:
 
 **Available MCP Tools:**
 - `query_influx` - Execute Flux queries against InfluxDB for network metrics
-- `check_suspicious_exceptions` - Detect PFE exception anomalies with 3 intelligent rules ⭐ NEW
+- `check_suspicious_exceptions` - Detect PFE exception anomalies with **6 intelligent rules** ⭐ NEW
 - `list_dashboards` - List all available Grafana dashboards
 - `get_dashboard` - Get details of a specific Grafana dashboard by UID
 
@@ -495,33 +495,120 @@ Once configured, ask your AI assistant:
 
 #### About `check_suspicious_exceptions`
 
-This AI-powered tool analyzes PFE exceptions using 3 intelligent detection rules:
+This AI-powered tool analyzes PFE exceptions using **6 intelligent detection rules**:
 
-**Rule 1: New Exceptions**
-- Detects when exceptions go from 0 to ≥1 exc/s and stay elevated
-- Example: A device suddenly starts reporting `sw_error` after being clean
+**Rule 1: New Exceptions (0→≥1 exc/s)**
+- Detects when exceptions go from 0 to ≥1 exc/s and stay elevated for X consecutive samples
+- **Detection criterion:** First sample that exceeds 1.0 exc/s after being near zero
+- **Example:** A device suddenly starts reporting `sw_error` after being clean
+- **Temporal precision:** ±1 minute
 
 **Rule 2: Spike Detection**
 - Compares current rates against 2-day historical baseline
-- Detects sudden peaks (>2x baseline + 3σ)
-- Example: `firewall_discard` jumps from 0.2 to 1.3 exc/s
+- Detects sudden peaks (>2x baseline + 3σ standard deviations)
+- **Detection criterion:** Timestamp of the maximum peak value
+- **Example:** `firewall_discard` jumps from 0.2 to 1.3 exc/s
+- **Temporal precision:** ±5 minutes
 
 **Rule 3: Sustained Behavior Change**
-- Detects gradual but significant increases over baseline
-- Example: `sw_error` rate increases from 4.8 to 6.9 exc/s (+42%)
+- Detects gradual but significant increases over 2-day baseline
+- Triggers when ≥70% of recent samples are above baseline
+- **Detection criterion:** First sample above baseline in the recent window
+- **Example:** `sw_error` rate increases from 4.8 to 6.9 exc/s (+42%)
+- **Temporal precision:** ±5 minutes
 
-**Severity Levels:**
+**Rule 4: Weekly Baseline Comparison** 📅 NEW
+- Compares recent behavior vs same day/hour last week (7 days ago)
+- **Solves the "moving baseline" problem** for long-duration anomalies
+- **Detection criterion:** First sample in the recent analysis window
+- **Example:** Rate is normal vs 2-day baseline but 50% higher than last week
+- **Temporal precision:** Start of analysis window
+- **Why important:** Catches anomalies that persist >2 days and become "normalized" in the 2-day baseline
+
+**Rule 5: Rate of Change / Trend Detection** 📈 NEW
+- Detects accelerating problems (increasing trend over time)
+- Analyzes hourly averages to identify consistent growth patterns
+- **Detection criterion:** Timestamp of last hourly sample that confirms the trend
+- **Example:** 4+ consecutive hours with increasing rates (2→3→4→5→6 exc/s)
+- **Temporal precision:** ±1 hour
+- **Requirements:** Needs `lookback_hours >= 6` to analyze trends
+- **Why important:** Early warning system for problems that are getting worse
+
+**Rule 7: Multiple Exception Correlation** 🔗 NEW
+- Detects when 2+ different exception types increase simultaneously on same device/slot
+- **Detection criterion:** Timestamp of first exception in the correlated group
+- **Example:** `sw_error:+40%`, `unknown_iif:+60%`, `firewall_discard:+30%` all within ±5 minutes
+- **Temporal precision:** ±5 minutes
+- **Why important:** Multiple simultaneous exceptions suggest systemic issues (hardware failure, configuration problem, etc.)
+
+---
+
+### Detection Timing (`detected_at` field)
+
+Each rule uses a specific criterion for the `detected_at` timestamp:
+
+| Rule | `detected_at` represents | When to use |
+|------|-------------------------|-------------|
+| **Rule 1** | First sample ≥1 exc/s after being ~0 | Catching new problems as they start |
+| **Rule 2** | Moment of peak/spike (max value) | Identifying when the worst impact occurred |
+| **Rule 3** | First sample above 2-day baseline | Start of sustained behavior change |
+| **Rule 4** | Start of analysis window | Comparing to weekly patterns |
+| **Rule 5** | Last sample confirming trend | When acceleration is confirmed |
+| **Rule 7** | First correlated exception | When multiple issues began |
+
+**Note:** Temporal precision varies due to aggregation windows used for performance and noise reduction.
+
+---
+
+### Severity Levels
+
+Exceptions are automatically classified by severity:
+
 - 🔴 **CRITICAL**: `egress_pfe_unspecified`, `unknown_family`
 - 🟠 **HIGH**: `sw_error`, `unknown_iif`
 - 🟡 **MEDIUM**: `firewall_discard`
 - 🟢 **LOW**: `discard_route`
 
-**Output includes:**
-- Device name and slot number
-- Exception type and severity
-- Detection rule that triggered
-- Timestamp when anomaly was detected
-- Detailed metrics (current rate, baseline, percentage change)
+---
+
+### Output Format
+
+Each detected anomaly includes:
+
+- **device**: Device hostname
+- **exception**: Exception type (or "multiple_correlated" for Rule 7)
+- **slot**: FPC slot number
+- **state**: Severity level (CRITICAL/HIGH/MEDIUM/LOW)
+- **rule**: Which detection rule triggered (Rule 1-7)
+- **detected_at**: Timestamp when anomaly was detected (see table above)
+- **details**: Human-readable description with metrics
+- **grafana_url**: Direct link to pre-filtered Grafana dashboard showing the anomaly
+
+---
+
+### Usage Tips
+
+**For short-term monitoring (1-3 hours):**
+- Rules 1, 2, and 3 are most effective
+- Rule 4 works if you have 7+ days of historical data
+- Rule 5 requires at least 6 hours
+- Rule 7 works with any time window
+
+**For trend analysis (6+ hours):**
+- Enable Rule 5 for acceleration detection
+- Use `lookback_hours=6` or higher
+
+**For long-term pattern detection:**
+- Rule 4 catches anomalies that persist >2 days
+- Helps identify "new normal" that shouldn't be normal
+
+**Example queries:**
+```
+"Detect suspicious exceptions in the last hour"          # Rules 1,2,3,7
+"Check for suspicious exceptions in the last 6 hours"    # All rules including Rule 5
+"Are there any accelerating problems?"                   # Emphasizes Rule 5
+"Show me correlated exceptions on device X"              # Emphasizes Rule 7
+```
 
 ---
 
@@ -802,16 +889,27 @@ EOF
 ### 🎯 AI Query Examples
 ```
 "Detect suspicious exceptions in the last hour"
+"Check for suspicious exceptions in the last 6 hours"
+"Are there any accelerating problems?"
 "Show me devices with sw_error > 5 exc/s"
+"Show me correlated exceptions on device hl4mmt1-301"
 "List Grafana dashboards"
 "Query PFE exceptions for hl4mmt1-301"
 ```
 
 ### 📊 Available Tools (4)
 1. **`query_influx`** - Execute Flux queries
-2. **`check_suspicious_exceptions`** - AI-powered anomaly detection ⭐
+2. **`check_suspicious_exceptions`** - AI-powered anomaly detection with **6 rules** ⭐
 3. **`list_dashboards`** - List Grafana dashboards  
 4. **`get_dashboard`** - Get dashboard details
+
+### 🎯 Detection Rules Summary
+- **Rule 1:** New exceptions (0→≥1 exc/s sustained)
+- **Rule 2:** Spike detection (vs 2-day baseline)
+- **Rule 3:** Sustained behavior change
+- **Rule 4:** Weekly baseline comparison (solves moving baseline problem)
+- **Rule 5:** Rate of change / trend detection (needs 6+ hours)
+- **Rule 7:** Multiple exception correlation (systemic issues)
 
 ### 🔗 Service URLs
 - InfluxDB UI: http://localhost:8086 (admin/admin123)
