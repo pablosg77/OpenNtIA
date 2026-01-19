@@ -353,7 +353,7 @@ Open GitHub Copilot Chat (`Ctrl+Alt+I`) and try:
 "Detect suspicious exceptions in the last hour"
 "Show me devices with sw_error"
 "List Grafana dashboards"
-"Query PFE exceptions for device hl4mmt1-301"
+"Query PFE exceptions for device router1"
 ```
 
 #### Troubleshooting:
