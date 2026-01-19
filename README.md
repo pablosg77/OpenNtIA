@@ -490,7 +490,7 @@ Once configured, ask your AI assistant:
 - **"Show me devices with sw_error exceptions"**
 - **"Are there any critical exceptions right now?"**
 - **"Check for firewall_discard spikes in the last 6 hours"**
-- **"Query PFE exceptions for device hl4mmt1-301"**
+- **"Query PFE exceptions for device router1"**
 - **"List available Grafana dashboards"**
 
 #### About `check_suspicious_exceptions`
