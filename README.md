@@ -2,6 +2,8 @@
 
 MCP (Model Context Protocol) server for Juniper network observability with InfluxDB and Grafana integration.
 
+![Demo](assets/demo_fast.gif)
+
 ## Overview
 
 This project provides a complete observability stack for Juniper networks:
