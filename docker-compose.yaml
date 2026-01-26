@@ -49,6 +49,15 @@ services:
     depends_on:
       - influxdb
       - grafana
+  junos-mcp-server:
+    build: ./mcp-junos  
+    container_name: junos-mcp-server
+    volumes:
+      - ./mcp-junos/devices.json:/app/config/devices.json:ro
+      - /etc/hosts:/etc/hosts:ro
+      - ./mcp-junos/.tokens:/app/.tokens
+    ports:
+      - "30030:30030"
   telegraf:
     build: ./collector
     container_name: collector
