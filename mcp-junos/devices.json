@@ -1,0 +1,56 @@
+  {
+    "router1": {
+        "ip": "10.10.20.1",
+        "port": 22,
+        "username": "jncie",
+        "auth": {
+            "type": "password",
+            "password": "jncie123"
+        }
+    },
+    "router2": {
+        "ip": "10.10.20.2",
+        "port": 22,
+        "username": "jncie",
+        "auth": {
+            "type": "password",
+            "password": "jncie123"
+        }
+    },
+    "router3": {
+        "ip": "10.10.20.3",
+        "port": 22,
+        "username": "jncie",
+        "auth": {
+            "type": "password",
+            "password": "jncie123"
+        }
+    },
+    "router4": {
+        "ip": "10.10.20.4",
+        "port": 22,
+        "username": "jncie",
+        "auth": {
+            "type": "password",
+            "password": "jncie123"
+        }
+    },
+    "router5": {
+        "ip": "10.10.20.5",
+        "port": 22,
+        "username": "jncie",
+        "auth": {
+            "type": "password",
+            "password": "jncie123"
+        }
+    },
+    "router6": {
+        "ip": "10.10.20.6",
+        "port": 22,
+        "username": "jncie",
+        "auth": {
+            "type": "password",
+            "password": "jncie123"
+        }
+    }
+}
