@@ -892,9 +892,9 @@ EOF
 "Check for suspicious exceptions in the last 6 hours"
 "Are there any accelerating problems?"
 "Show me devices with sw_error > 5 exc/s"
-"Show me correlated exceptions on device hl4mmt1-301"
+"Show me correlated exceptions on device router1"
 "List Grafana dashboards"
-"Query PFE exceptions for hl4mmt1-301"
+"Query PFE exceptions for router1"
 ```
 
 ### 📊 Available Tools (4)
