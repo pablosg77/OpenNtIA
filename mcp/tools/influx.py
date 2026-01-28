@@ -10,8 +10,22 @@ from influxdb_client import InfluxDBClient
 from config import INFLUX_URL, INFLUX_TOKEN, INFLUX_ORG, INFLUX_BUCKET, GRAFANA_URL
 from typing import Dict, List
 import statistics
+import logging
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
+from tools.ml_detector import create_isolation_forest_detector
+from tools.baseline_manager import BaselineManager
+
+log = logging.getLogger(__name__)
+
+# Initialize baseline manager (singleton)
+baseline_manager = BaselineManager(
+    short_window_hours=2,
+    medium_window_hours=24,
+    long_window_hours=168,
+    ewma_alpha=0.3,
+    regime_change_threshold=2.0
+)
 
 
 def generate_grafana_dashboard_url(device: str, exception: str, slot: str, detected_at: str, lookback_hours: int = 1, dashboard_uid: str = "ef9xzro0ybu9sd") -> str:
@@ -90,9 +104,15 @@ def query_influx(flux: str) -> dict:
         }
 
 
-def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples: int = 3) -> dict:
+def check_suspicious_exceptions(
+    lookback_hours: int = 1, 
+    min_consecutive_samples: int = 3,
+    use_ml: bool = True,
+    ml_confidence_threshold: float = 0.65,
+    use_dynamic_baseline: bool = True
+) -> dict:
     """
-    Detect suspicious PFE exception patterns using six rules:
+    Detect suspicious PFE exception patterns using seven rules:
     
     Rule 1: New exceptions (0 to >=1pps sustained for X samples)
     Rule 2: Spike detection (comparing to 2-day baseline)
@@ -100,11 +120,14 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
     Rule 4: Weekly baseline comparison (detects long-term changes)
     Rule 5: Rate of change / trend detection (detects accelerating problems)
     Rule 7: Multiple exception correlation (detects systemic issues)
+    Rule 8: ML-based detection (Isolation Forest) ⭐ NEW
     
     Args:
         lookback_hours: Hours to look back for analysis (default: 1)
         min_consecutive_samples: Minimum consecutive samples to consider suspicious (default: 3)
-        
+        use_ml: Enable ML-based detection (Rule 8) (default: True)
+        ml_confidence_threshold: Minimum ML confidence to report 0-1 (default: 0.65)
+    
     Returns:
         dict: {
             "suspicious_exceptions": [
@@ -113,8 +136,9 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                     "exception": str,
                     "slot": str,
                     "state": "CRITICAL|HIGH|MEDIUM|LOW",
-                    "rule": "Rule 1|Rule 2|Rule 3|Rule 4|Rule 5|Rule 7",
-                    "details": str
+                    "rule": "Rule 1|Rule 2|Rule 3|Rule 4|Rule 5|Rule 7|Rule 8",
+                    "details": str,
+                    "ml_confidence": float (only for Rule 8)
                 }
             ],
             "summary": {
@@ -122,7 +146,8 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                 "critical": int,
                 "high": int,
                 "medium": int,
-                "low": int
+                "low": int,
+                "ml_detected": int
             }
         }
     """
@@ -142,7 +167,16 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
     severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     
     suspicious = []
-    
+    # Initialize ML detector if enabled
+    ml_detector = None
+    if use_ml:
+        try:
+            ml_detector = create_isolation_forest_detector()
+            log.info("✅ ML detector (Isolation Forest) initialized")
+        except Exception as e:
+            log.warning(f"⚠️ ML detector initialization failed: {e}. Continuing with rule-based detection only.")
+            ml_detector = None
+
     with InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG) as client:
         query_api = client.query_api()
         
@@ -233,12 +267,14 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                             "grafana_url": grafana_url
                         })
                         break  # Only report once per key
-        
-        # ===== RULE 2: Spike detection (2-day baseline) =====
-        # Get baseline (older data: -48h to -lookback_hours)
+
+        # ===== FETCH BASELINE AND RECENT DATA (for Rules 2, 3, 4, 7) =====
+        # Dynamic baseline window: always fetch 2x lookback_hours for baseline
+        # Minimum baseline window: 48 hours
+        baseline_window_hours = max(48, lookback_hours * 2)
         baseline_flux = f'''
         from(bucket: "{INFLUX_BUCKET}")
-          |> range(start: -48h, stop: -{lookback_hours}h)
+          |> range(start: -{baseline_window_hours}h, stop: -{lookback_hours}h)
           |> filter(fn: (r) => r._measurement == "pfe_exceptions")
           |> filter(fn: (r) => r._field == "count")
           |> derivative(unit: 1s, nonNegative: true)
@@ -272,7 +308,6 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                 value = record.values.get("_value", 0)
                 time = record.values.get("_time")
                 
-                # Skip if value is None or invalid
                 if value is None:
                     continue
                 
@@ -289,14 +324,163 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                 value = record.values.get("_value", 0)
                 time = record.values.get("_time")
                 
-                # Skip if value is None or invalid
                 if value is None:
                     continue
                 
                 if key not in recent_by_key:
                     recent_by_key[key] = []
                 recent_by_key[key].append({"value": value, "time": time})
-        
+
+        # ===== RULE 2 & 3: Baseline Detection (Dynamic or Standard) =====
+        if use_dynamic_baseline:
+            log.info("🚀 Using DYNAMIC baseline (multi-window + EWMA + regime detection)")
+            # Ensure we fetch enough extended baseline data
+            # Minimum: 7 days (168h) OR 2x lookback_hours (whichever is larger)
+            extended_baseline_hours = max(baseline_manager.long_window, lookback_hours * 2)
+            extended_baseline_flux = f'''
+            from(bucket: "{INFLUX_BUCKET}")
+              |> range(start: -{extended_baseline_hours}h)
+              |> filter(fn: (r) => r._measurement == "pfe_exceptions")
+              |> filter(fn: (r) => r._field == "count")
+              |> derivative(unit: 1s, nonNegative: true)
+              |> group(columns: ["device", "slot", "exception"])
+              |> aggregateWindow(every: 5m, fn: mean, createEmpty: false)
+            '''
+            
+            extended_baseline_tables = query_api.query(extended_baseline_flux)
+            extended_baseline_by_key = {}
+            
+            # Collect extended baseline data (7 days)
+            for table in extended_baseline_tables:
+                for record in table.records:
+                    key = (record.values.get("device"), 
+                           record.values.get("slot"), 
+                           record.values.get("exception"))
+                    value = record.values.get("_value")
+                    time = record.values.get("_time")
+                    
+                    if value is None:
+                        continue
+                    
+                    if key not in extended_baseline_by_key:
+                        extended_baseline_by_key[key] = []
+                    extended_baseline_by_key[key].append({"value": value, "time": time})
+            
+            # Calculate dynamic baselines for each key
+            for key in recent_by_key:
+                device, slot, exception = key
+                
+                if key not in extended_baseline_by_key:
+                    continue
+                
+                # Get multi-window baseline
+                multi_baseline = baseline_manager.calculate_multi_window_baseline(
+                    all_data=extended_baseline_by_key[key]
+                )
+                
+                composite_baseline = multi_baseline["composite"]
+                
+                # Check for regime change
+                recent_data = recent_by_key[key]
+                is_regime_change, new_baseline = baseline_manager.detect_regime_change(
+                    recent_data=recent_data,
+                    historical_baseline=composite_baseline
+                )
+                
+                if is_regime_change:
+                    log.warning(f"🔄 Regime change detected for {device}/{exception}/{slot}")
+                    # Use new baseline going forward
+                    baseline_to_use = new_baseline
+                else:
+                    baseline_to_use = composite_baseline
+                
+                # Extract recent values
+                recent_values = [x["value"] for x in recent_data if x.get("value") is not None]
+                if not recent_values:
+                    continue
+                
+                recent_mean = statistics.mean(recent_values)
+                recent_max = max(recent_values)
+                
+                baseline_mean = baseline_to_use["mean"]
+                baseline_std = baseline_to_use["std"]
+                
+                # ===== RULE 2: Dynamic Spike Detection =====
+                # Use EWMA for more reactive detection
+                ewma_baseline = baseline_manager.calculate_ewma_baseline(
+                    extended_baseline_by_key[key]
+                )
+                
+                threshold = ewma_baseline["upper_bound"]
+                
+                if recent_max > threshold and recent_max > 0.5:
+                    spike_factor = recent_max / max(ewma_baseline["ewma"], 0.01)
+                    
+                    if spike_factor > 2.0:
+                        recent_max_entry = max((x for x in recent_data if x["value"] is not None), 
+                                             key=lambda x: x["value"])
+                        recent_max_time = recent_max_entry["time"]
+                        
+                        state = severity_map.get(exception, "LOW")
+                        details = f"Dynamic spike: {recent_max:.2f} exc/s (EWMA: {ewma_baseline['ewma']:.2f}, " \
+                                 f"threshold: {threshold:.2f}, {spike_factor:.1f}x)"
+                        
+                        grafana_url = generate_grafana_dashboard_url(device, exception, str(slot), 
+                                                                    str(recent_max_time), lookback_hours)
+                        
+                        suspicious.append({
+                            "device": device,
+                            "exception": exception,
+                            "slot": str(slot),
+                            "state": state,
+                            "rule": "Rule 2 (Dynamic)",
+                            "detected_at": str(recent_max_time),
+                            "details": details,
+                            "grafana_url": grafana_url,
+                            "baseline_type": "EWMA"
+                        })
+                
+                # ===== RULE 3: Dynamic Sustained Change Detection =====
+                if recent_mean > baseline_mean + (1.5 * baseline_std) and recent_mean >= 0.5:
+                    # Check if sustained
+                    sustained_count = sum(1 for v in recent_values if v > baseline_mean)
+                    sustained_pct = (sustained_count / len(recent_values)) * 100
+                    
+                    if sustained_pct >= 70:
+                        first_above = next((x for x in recent_data if x["value"] and x["value"] > baseline_mean), 
+                                         recent_data[0])
+                        first_above_time = first_above["time"]
+                        
+                        increase_pct = ((recent_mean - baseline_mean) / max(baseline_mean, 0.01)) * 100
+                        
+                        state = severity_map.get(exception, "LOW")
+                        weights = multi_baseline["weights"]
+                        details = f"Dynamic sustained: {recent_mean:.2f} exc/s (baseline: {baseline_mean:.2f}, " \
+                                 f"+{increase_pct:.0f}%, weights: S={weights['short']:.2f}/M={weights['medium']:.2f}/L={weights['long']:.2f})"
+                        
+                        if is_regime_change:
+                            details += " [REGIME CHANGE]"
+                        
+                        grafana_url = generate_grafana_dashboard_url(device, exception, str(slot), 
+                                                                    str(first_above_time), lookback_hours)
+                        
+                        suspicious.append({
+                            "device": device,
+                            "exception": exception,
+                            "slot": str(slot),
+                            "state": state,
+                            "rule": "Rule 3 (Dynamic)",
+                            "detected_at": str(first_above_time),
+                            "details": details,
+                            "grafana_url": grafana_url,
+                            "baseline_type": "Multi-window",
+                            "regime_change": is_regime_change
+                        })
+        else:
+            # ===== STANDARD BASELINE (Rules 2 & 3) =====
+            log.info("📊 Using standard 2-day baseline")
+            
+            # RULE 2: Spike detection
         for key in recent_by_key:
             if key not in baseline_by_key or len(baseline_by_key[key]) < 10:
                 continue
@@ -305,30 +489,25 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
             baseline_data = baseline_by_key[key]
             recent_data = recent_by_key[key]
             
-            # Extract values for statistics - filter out None values
             baseline_values = [x["value"] for x in baseline_data if x["value"] is not None]
             recent_values = [x["value"] for x in recent_data if x["value"] is not None]
             
-            # Skip if no valid data
             if not baseline_values or not recent_values:
                 continue
             
             baseline_mean = statistics.mean(baseline_values)
             baseline_std = statistics.stdev(baseline_values) if len(baseline_values) > 1 else 0
             recent_max = max(recent_values)
-            # Get timestamp of max value
             recent_max_entry = max((x for x in recent_data if x["value"] is not None), key=lambda x: x["value"])
             recent_max_time = recent_max_entry["time"]
             
-            # Spike: recent max > baseline_mean + 3*std AND at least 2x increase
             threshold = baseline_mean + (3 * baseline_std)
-            if recent_max > threshold and recent_max > 0.5:  # At least 0.5 exc/s
-                spike_factor = recent_max / max(baseline_mean, 0.01)  # Avoid division by zero
-                if spike_factor > 2.0:  # At least 2x increase
+            if recent_max > threshold and recent_max > 0.5:
+                spike_factor = recent_max / max(baseline_mean, 0.01)
+                if spike_factor > 2.0:
                     state = severity_map.get(exception, "LOW")
                     details = f"Spike: {recent_max:.2f} exc/s (baseline: {baseline_mean:.2f} exc/s, {spike_factor:.1f}x)"
                     
-                    # Generate Grafana dashboard URL
                     grafana_url = generate_grafana_dashboard_url(device, exception, str(slot), str(recent_max_time), lookback_hours)
                     
                     suspicious.append({
@@ -344,12 +523,9 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
         
         # ===== RULE 3: Sustained behavior change =====
         for key in recent_by_key:
-            # Check if exception appears with no baseline (new exception that wasn't there before)
             device, slot, exception = key
             
             if key not in baseline_by_key or len(baseline_by_key[key]) < 10:
-                # SPECIAL CASE: Exception appears with no historical baseline
-                # This catches cases like hold_route that suddenly appear
                 recent_data = recent_by_key[key]
                 if len(recent_data) < min_consecutive_samples:
                     continue
@@ -360,19 +536,16 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                 
                 recent_mean = statistics.mean(recent_values)
                 
-                # Trigger if sustained rate >= 0.5 exc/s (adaptive threshold)
                 if recent_mean >= 0.5:
                     recent_min = min(recent_values)
                     recent_max = max(recent_values)
                     
-                    # Get first sample
                     first_sample = next((x for x in recent_data if x["value"] is not None), recent_data[0])
                     first_time = first_sample["time"]
                     
                     state = severity_map.get(exception, "LOW")
                     details = f"Sustained (new exception, no baseline): {recent_mean:.2f} exc/s (baseline: 0.0 exc/s, min/max: {recent_min:.2f}/{recent_max:.2f})"
                     
-                    # Generate Grafana dashboard URL
                     grafana_url = generate_grafana_dashboard_url(device, exception, str(slot), str(first_time), lookback_hours)
                     
                     suspicious.append({
@@ -385,20 +558,17 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                         "details": details,
                         "grafana_url": grafana_url
                     })
-                continue  # Skip normal Rule 3 processing for this key
+                continue
             
-            device, slot, exception = key
             baseline_data = baseline_by_key[key]
             recent_data = recent_by_key[key]
             
             if len(recent_data) < min_consecutive_samples:
                 continue
             
-            # Extract values for statistics - filter out None values
             baseline_values = [x["value"] for x in baseline_data if x["value"] is not None]
             recent_values = [x["value"] for x in recent_data if x["value"] is not None]
             
-            # Skip if no valid data
             if not baseline_values or not recent_values:
                 continue
             
@@ -408,22 +578,14 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
             recent_min = min(recent_values)
             recent_max = max(recent_values)
             
-            # Skip if both baseline and recent are near zero (no meaningful change)
             if baseline_mean < 0.1 and recent_mean < 0.1:
                 continue
-            
-            # Three conditions for sustained behavior change:
-            # A) Significant increase from low baseline: recent_mean >= 1.0 exc/s AND baseline_mean < 1.0
-            # B) Percentage increase: recent_mean > baseline_mean * 1.3 (30% increase)
-            # C) Consistent elevation: recent_min > baseline_mean + baseline_std
             
             condition_a = recent_mean >= 1.0 and baseline_mean < 1.0
             condition_b = recent_mean > baseline_mean * 1.3 and baseline_mean >= 0.1
             condition_c = recent_min > (baseline_mean + baseline_std) and baseline_mean > 0.1
             
             if condition_a or condition_b or condition_c:
-                # Check if it's sustained (not just a spike)
-                # Filter out None values when counting sustained samples
                 valid_recent_data = [x for x in recent_data if x["value"] is not None]
                 if not valid_recent_data:
                     continue
@@ -431,14 +593,12 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                 sustained_count = sum(1 for x in valid_recent_data if x["value"] > baseline_mean)
                 sustained_pct = (sustained_count / len(valid_recent_data)) * 100
                 
-                if sustained_pct >= 70:  # At least 70% of samples above baseline
+                if sustained_pct >= 70:
                     increase_pct = ((recent_mean - baseline_mean) / max(baseline_mean, 0.01)) * 100
                     
-                    # Get timestamp of first sample above baseline (with valid value)
                     first_above = next((x for x in valid_recent_data if x["value"] > baseline_mean), valid_recent_data[0])
                     first_above_time = first_above["time"]
                     
-                    # Determine which condition triggered
                     if condition_a:
                         condition_met = "new sustained high rate"
                     elif condition_c:
@@ -449,7 +609,6 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                     state = severity_map.get(exception, "LOW")
                     details = f"Sustained ({condition_met}): {recent_mean:.2f} exc/s (baseline: {baseline_mean:.2f} exc/s, +{increase_pct:.0f}%, min/max: {recent_min:.2f}/{recent_max:.2f})"
                     
-                    # Generate Grafana dashboard URL
                     grafana_url = generate_grafana_dashboard_url(device, exception, str(slot), str(first_above_time), lookback_hours)
                     
                     suspicious.append({
@@ -468,7 +627,7 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
         # Solves the "moving baseline" problem for long-duration anomalies
         
         # Calculate total hours: 7 days (168h) + lookback_hours
-        weekly_start_hours = 168 + lookback_hours
+        weekly_start_hours = max(168 + lookback_hours, 168 + 24)  # At least 7 days + 24h
         
         weekly_baseline_flux = f'''
         from(bucket: "{INFLUX_BUCKET}")
@@ -712,26 +871,140 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
                     "details": details,
                     "grafana_url": grafana_url
                 })
-    
+
+        # ===== RULE 8: ML-based Detection (Isolation Forest) ⭐ NEW =====
+        if ml_detector is not None:
+            log.info("🤖 Running Rule 8: ML-based anomaly detection")
+            
+            # Fetch data for ML analysis
+            ml_flux = f'''
+            from(bucket: "{INFLUX_BUCKET}")
+              |> range(start: -{lookback_hours}h)
+              |> filter(fn: (r) => r._measurement == "pfe_exceptions")
+              |> filter(fn: (r) => r._field == "count")
+              |> derivative(unit: 1s, nonNegative: true)
+              |> group(columns: ["device", "slot", "exception"])
+              |> aggregateWindow(every: 1m, fn: mean, createEmpty: false)
+            '''
+            
+            ml_tables = query_api.query(ml_flux)
+            
+            # Group data by device/slot/exception
+            ml_data_by_key = {}
+            for table in ml_tables:
+                for record in table.records:
+                    key = (
+                        record.values.get("device"),
+                        record.values.get("slot"),
+                        record.values.get("exception")
+                    )
+                    value = record.values.get("_value")
+                    time = record.values.get("_time")
+                    
+                    if value is None or time is None:
+                        continue
+                    
+                    if key not in ml_data_by_key:
+                        ml_data_by_key[key] = []
+                    ml_data_by_key[key].append({"time": time, "value": value})
+            
+            # Run ML detection on each time series
+            ml_detected_count = 0
+            for (device, slot, exception), time_series in ml_data_by_key.items():
+                if len(time_series) < 20:  # Need minimum 20 samples
+                    continue
+                
+                # Sort by time
+                time_series.sort(key=lambda x: x["time"])
+                
+                # Run ML detection
+                try:
+                    ml_result = ml_detector.detect_anomalies(
+                        time_series=time_series,
+                        device=device,
+                        exception=exception,
+                        slot=slot,
+                        min_confidence=ml_confidence_threshold
+                    )
+                    
+                    if ml_result and ml_result["is_anomaly"]:
+                        ml_detected_count += 1
+                        
+                        # Determine severity
+                        state = severity_map.get(exception, "LOW")
+                        
+                        # Generate Grafana URL
+                        detection_time = ml_result["detection_time"]
+                        grafana_url = generate_grafana_dashboard_url(
+                            device, exception, str(slot), str(detection_time), lookback_hours
+                        )
+                        
+                        suspicious.append({
+                            "device": device,
+                            "exception": exception,
+                            "slot": str(slot),
+                            "state": state,
+                            "rule": "Rule 8 (ML)",
+                            "detected_at": str(detection_time),
+                            "details": ml_result["details"],
+                            "ml_confidence": ml_result["confidence"],
+                            "grafana_url": grafana_url
+                        })
+                        
+                        log.info(f"🎯 ML detected anomaly: {device}/{exception}/{slot} (confidence: {ml_result['confidence']:.1%})")
+                        
+                except Exception as e:
+                    log.error(f"Error in ML detection for {device}/{exception}/{slot}: {e}")
+                    continue
+            
+            log.info(f"✅ Rule 8 complete: {ml_detected_count} ML-detected anomalies")
+
     # Remove duplicates (same device/slot/exception might trigger multiple rules)
-    seen = set()
-    unique_suspicious = []
+    # Keep the detection with highest confidence or severity
+    seen = {}
     for item in suspicious:
         key = (item["device"], item["exception"], item["slot"])
+        
         if key not in seen:
-            seen.add(key)
-            unique_suspicious.append(item)
+            seen[key] = item
+        else:
+            # Keep item with higher confidence or severity
+            existing = seen[key]
+            
+            # Compare by ML confidence first (if available)
+            existing_confidence = existing.get("ml_confidence", 0.0)
+            new_confidence = item.get("ml_confidence", 0.0)
+            
+            if new_confidence > existing_confidence:
+                seen[key] = item
+            elif new_confidence == existing_confidence:
+                # If same confidence, compare severity
+                existing_severity = severity_order.get(existing["state"], 4)
+                new_severity = severity_order.get(item["state"], 4)
+                
+                if new_severity < existing_severity:
+                    seen[key] = item
     
-    # Sort by severity
-    unique_suspicious.sort(key=lambda x: severity_order.get(x["state"], 4))
+    unique_suspicious = list(seen.values())
+    
+    # Sort by severity first, then by ML confidence (if available)
+    unique_suspicious.sort(
+        key=lambda x: (
+            severity_order.get(x["state"], 4),
+            -x.get("ml_confidence", 0.0)
+        )
+    )
     
     # Summary
+    ml_detected = sum(1 for x in unique_suspicious if "ML" in x["rule"])
+    
     summary = {
         "total": len(unique_suspicious),
         "critical": sum(1 for x in unique_suspicious if x["state"] == "CRITICAL"),
         "high": sum(1 for x in unique_suspicious if x["state"] == "HIGH"),
         "medium": sum(1 for x in unique_suspicious if x["state"] == "MEDIUM"),
-        "low": sum(1 for x in unique_suspicious if x["state"] == "LOW")
+        "low": sum(1 for x in unique_suspicious if x["state"] == "LOW"),
+        "ml_detected": ml_detected
     }
     
     return {
@@ -740,8 +1013,7 @@ def check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples
     }
 
 
-# MCP tool wrappers - Se registran automáticamente en el servidor MCP
-# Estas funciones se importan en server.py después de crear la instancia mcp
+# MCP tool wrappers
 def register_tools(mcp):
     """Register all InfluxDB tools with the MCP server"""
     
@@ -762,30 +1034,50 @@ def register_tools(mcp):
         return query_influx(flux)
     
     @mcp.tool()
-    def mcp_check_suspicious_exceptions(lookback_hours: int = 1, min_consecutive_samples: int = 3) -> dict:
+    def mcp_check_suspicious_exceptions(
+        lookback_hours: int = 1, 
+        min_consecutive_samples: int = 3,
+        use_ml: bool = True,
+        ml_confidence_threshold: float = 0.65,
+        use_dynamic_baseline: bool = True
+    ) -> dict:
         """
         Detect suspicious PFE exception patterns using intelligent analysis.
         
-        Analyzes six types of anomalies:
+        Analyzes SEVEN types of anomalies:
         - Rule 1: New exceptions appearing (0 to >=1pps sustained)
         - Rule 2: Spike detection (comparing to 2-day historical baseline)
         - Rule 3: Sustained behavior change (gradual increase over baseline)
         - Rule 4: Weekly baseline comparison (detects long-term changes)
         - Rule 5: Rate of change / trend detection (detects accelerating problems)
         - Rule 7: Multiple exception correlation (detects systemic issues)
+        - Rule 8: ML-based detection (Isolation Forest) ⭐ NEW
+        
+        Rule 8 uses unsupervised machine learning to detect:
+        - Unusual patterns not caught by fixed rules
+        - Multivariate anomalies (combining value, trend, volatility)
+        - Context-aware detection (considers moving averages, std dev, rate of change)
         
         Severity levels:
         - CRITICAL: egress_pfe_unspecified, unknown_family
         - HIGH: sw_error, unknown_iif
-        - MEDIUM: firewall_discard
+        - MEDIUM: firewall_discard, hold_route
         - LOW: discard_route
         
         Args:
             lookback_hours: Hours to analyze (default: 1, minimum 6 for Rule 5)
             min_consecutive_samples: Minimum samples to confirm anomaly (default: 3)
+            use_ml: Enable ML-based detection (Rule 8) (default: True)
+            ml_confidence_threshold: Minimum ML confidence to report 0-1 (default: 0.65)
             
         Returns:
             Table with: device, exception, slot, state, rule, detected_at, details, grafana_url
+            ML detections also include: ml_confidence
         """
-        return check_suspicious_exceptions(lookback_hours, min_consecutive_samples)
-
+        return check_suspicious_exceptions(
+            lookback_hours, 
+            min_consecutive_samples,
+            use_ml,
+            ml_confidence_threshold,
+            use_dynamic_baseline 
+        )
