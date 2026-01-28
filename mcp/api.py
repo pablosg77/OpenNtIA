@@ -16,6 +16,9 @@ class FluxQuery(BaseModel):
 class SuspiciousExceptionsParams(BaseModel):
     lookback_hours: int = 1
     min_consecutive_samples: int = 3
+    use_ml: bool = True
+    ml_confidence_threshold: float = 0.65
+    use_dynamic_baseline: bool = True  # ✅ ENABLED: Dynamic baseline with multi-window analysis 
 
 
 @app.get("/")
@@ -64,17 +67,24 @@ def api_check_suspicious_exceptions(params: SuspiciousExceptionsParams = None):
     """
     Check for suspicious PFE exception patterns
     
-    Uses 3 detection rules:
+    Uses 7 detection rules including ML-based detection (Rule 8):
     - Rule 1: New exceptions (0 to >=1pps sustained)
     - Rule 2: Spike detection vs 2-day baseline
     - Rule 3: Sustained behavior change
+    - Rule 4: Weekly baseline comparison
+    - Rule 5: Rate of change / trend detection
+    - Rule 7: Multiple exception correlation
+    - Rule 8: ML-based detection (Isolation Forest)
     """
     try:
         if params is None:
             params = SuspiciousExceptionsParams()
         return check_suspicious_exceptions(
             lookback_hours=params.lookback_hours,
-            min_consecutive_samples=params.min_consecutive_samples
+            min_consecutive_samples=params.min_consecutive_samples,
+            use_ml=params.use_ml,
+            ml_confidence_threshold=params.ml_confidence_threshold,
+            use_dynamic_baseline=params.use_dynamic_baseline
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
