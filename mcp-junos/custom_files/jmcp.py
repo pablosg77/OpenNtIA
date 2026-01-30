@@ -24,11 +24,11 @@ import time
 from datetime import datetime, timezone
 import logging
 import os
+from jinja2 import Environment, FileSystemLoader, TemplateNotFound
 import json
+import yaml
 import sys
-import re
 import signal
-import paramiko
 from typing import Any, Sequence
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 
@@ -43,14 +43,6 @@ from mcp.server.elicitation import (
     CancelledElicitation,
 )
 
-from scapy.all import Ether, IP, IPv6, UDP, TCP, ICMP, ARP, bind_layers, Dot1Q
-from scapy.contrib.mpls import MPLS
-from scapy.contrib.ospf import OSPF_Hdr, OSPF_Hello, OSPF_LSA_Hdr
-from scapy.contrib.ldp import LDP
-from scapy.contrib.rsvp import RSVP
-
-
-import json
 import anyio
 import mcp.types as types
 from mcp.server.lowlevel import Server
@@ -62,6 +54,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from mcp.server.stdio import stdio_server
 from mcp.server.session import ServerSession, ServerSessionT
 from mcp.server.elicitation import ElicitationResult, ElicitSchemaModelT, elicit_with_validation
 
@@ -82,14 +75,13 @@ from mcp.types import PromptArgument as MCPPromptArgument
 from mcp.types import Resource as MCPResource
 from mcp.types import ResourceTemplate as MCPResourceTemplate
 from mcp.types import Tool as MCPTool
-
+from jinja2 import Environment, TemplateError
 
 from jnpr.junos import Device
-from jnpr.junos.exception import ConnectError
+from jnpr.junos.exception import ConnectError, ConfigLoadError, CommitError, LockError
 from jnpr.junos.utils.config import Config
 
 from utils.config import prepare_connection_params,prepare_connection_params_debug, validate_device_config, validate_all_devices
-#from tools import discover_and_load_tools
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -404,7 +396,7 @@ async def handle_add_device(arguments: dict, context: Context) -> list[types.Con
                 ctx, "Please enter the device name:", 
                 ElicitationSchema.GetDeviceName, "name"
             )
-            
+
             if name_result is None:
                 return [types.TextContent(type="text", text="❌ Device name input cancelled.")]
             
@@ -419,7 +411,7 @@ async def handle_add_device(arguments: dict, context: Context) -> list[types.Con
                 # Ask for a different name
                 device_name = ""
                 continue
-        
+
         # Step 2: Get device IP
         while not device_ip:
             log.info("No device IP provided, asking user")
@@ -443,13 +435,13 @@ async def handle_add_device(arguments: dict, context: Context) -> list[types.Con
                 ctx, f"Please enter the SSH port for device '{device_name}' (default: 22):",
                 ElicitationSchema.GetDevicePort, "port"
             )
-            
+
             if port_result is None:
                 return [types.TextContent(type="text", text="❌ Device port input cancelled.")]
-            
+
             device_port = int(port_result)
             log.info(f"Received device port: {device_port}")
-        
+
         # Step 4: Get username
         while not username:
             log.info("Username not provided, asking user")
@@ -458,41 +450,41 @@ async def handle_add_device(arguments: dict, context: Context) -> list[types.Con
                 ctx, f"Please enter the username for device '{device_name}':",
                 ElicitationSchema.GetDeviceUsername, "username"
             )
-            
+
             if creds_result is None:
                 return [types.TextContent(type="text", text="❌ Username input cancelled.")]
-            
+
             username = str(creds_result).strip()
             log.info(f"Received username: '{username}'")
-        
+
         # Step 5: Get SSH key path
         while not ssh_key_path:
             log.info("SSH key path not provided, asking user")
-            
+
             ssh_key_result = await elicit_field_value(
                 ctx, f"Please enter the SSH private key file path for device '{device_name}':",
                 ElicitationSchema.GetSSHKeyPath, "ssh_key_path"
             )
-            
+
             if ssh_key_result is None:
                 return [types.TextContent(type="text", text="❌ SSH key path input cancelled.")]
-            
+
             ssh_key_path = str(ssh_key_result).strip()
-            
+
             # Validate SSH key file exists
             if not os.path.exists(ssh_key_path):
                 await ctx.warning(f"SSH key file '{ssh_key_path}' not found. Please enter a valid path.")
                 ssh_key_path = ""
                 continue
-            
+
             # Check if file is readable
             if not os.access(ssh_key_path, os.R_OK):
                 await ctx.warning(f"SSH key file '{ssh_key_path}' is not readable. Please check permissions.")
                 ssh_key_path = ""
                 continue
-            
+
             log.info(f"Received SSH key path: '{ssh_key_path}'")
-        
+
         # Step 6: Show summary and ask for confirmation
         device_summary = f"""Device Details:
 • Name: {device_name}
@@ -500,21 +492,21 @@ async def handle_add_device(arguments: dict, context: Context) -> list[types.Con
 • Port: {device_port}
 • Username: {username}
 • SSH Key: {ssh_key_path}"""
-        
+
         confirmation = await elicit_field_value(
             ctx,
             f"Please confirm adding this device:\n\n{device_summary}",
             ElicitationSchema.ConfirmDeviceAdd,
             None
         )
-        
+
         if confirmation is None or not confirmation.confirm:
             return [types.TextContent(type="text", text="❌ Device addition cancelled.")]
-        
+
         # Step 7: Optional connection test
         if confirmation.test_connection:
             await ctx.info(f"Testing connection to {device_name}...")
-            
+
             # Create device configuration for testing
             test_device_info = {
                 "ip": device_ip,
@@ -525,19 +517,19 @@ async def handle_add_device(arguments: dict, context: Context) -> list[types.Con
                     "private_key_path": ssh_key_path
                 }
             }
-            
+
             test_device = None
             try:
                 connect_params = prepare_connection_params(test_device_info, device_name)
-                
+
                 # Create device instance for testing
                 test_device = Device(**connect_params)
                 test_device.open()
                 test_device.timeout = 10
-                
+
                 # Just test the connection, don't run any commands
                 await ctx.info(f"✅ Connection test successful!")
-                    
+
             except Exception as e:
                 log.error(f"Connection test failed for {device_name}: {e}")
                 return [types.TextContent(type="text", text=f"❌ Connection test failed: {str(e)}\nDevice not added.")]
@@ -556,7 +548,7 @@ async def handle_add_device(arguments: dict, context: Context) -> list[types.Con
                                 test_device._conn.close()
                         except Exception as transport_error:
                             log.warning(f"Error while closing test transport to {device_name}: {transport_error}")
-        
+
         # Step 8: Add device to global devices dictionary
         new_device_config = {
             "ip": device_ip,
@@ -567,7 +559,7 @@ async def handle_add_device(arguments: dict, context: Context) -> list[types.Con
                 "private_key_path": ssh_key_path
             }
         }
-        
+
         # Validate the new device configuration before adding
         validate_device_config(device_name, new_device_config)
         
@@ -585,13 +577,12 @@ Details:
 • Username: {username}
 
 The device is now available for use with all Junos MCP tools."""
-        
+
         return [types.TextContent(type="text", text=result_message)]
-        
+
     except Exception as e:
         log.error(f"Unexpected error in add_device: {e}")
         return [types.TextContent(type="text", text=f"❌ Failed to add device: {str(e)}")]
-
 
 
 def _run_junos_cli_command(router_name: str, command: str, timeout: int = 360) -> str:
@@ -784,14 +775,14 @@ def get_timeout_with_fallback(arguments_timeout: int = None) -> int:
     """Get timeout value with fallback priority: arguments -> ENV -> default (360)"""
     if arguments_timeout is not None:
         return arguments_timeout
-    
+
     env_timeout = os.getenv('JUNOS_TIMEOUT')
     if env_timeout is not None:
         try:
             return int(env_timeout)
         except ValueError:
             log.warning(f"Invalid JUNOS_TIMEOUT environment variable value: {env_timeout}. Using default timeout.")
-    
+
     return 360
 
 def validate_token_from_file(token: str) -> bool:
@@ -799,30 +790,29 @@ def validate_token_from_file(token: str) -> bool:
     try:
         if not os.path.exists(".tokens"):
             return False
-        
+
         with open(".tokens", 'r') as f:
             tokens = json.load(f)
-        
+
         for token_data in tokens.values():
             if token_data.get('token') == token:
                 return True
-        
+
         return False
     except (json.JSONDecodeError, FileNotFoundError, KeyError):
         return False
 
-
 class BearerTokenMiddleware(BaseHTTPMiddleware):
     """Middleware to check Bearer token authentication for streamable-http"""
-    
+
     def __init__(self, app, auth_enabled: bool = True):
         super().__init__(app)
         self.auth_enabled = auth_enabled
-    
+
     async def dispatch(self, request: Request, call_next):
         # Log all incoming requests during elicitation debugging
         log.info(f"Incoming request: {request.method} {request.url.path} from {request.client.host if request.client else 'unknown'}")
-        
+
         # Try to read request body for debugging
         if request.method == "POST":
             try:
@@ -836,11 +826,11 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
                         log.info(f"Raw request body: {body[:200]}...")
             except Exception as e:
                 log.warning(f"Could not read request body: {e}")
-        
+
         # Skip auth if disabled (for stdio transport)
         if not self.auth_enabled:
             return await call_next(request)
-        
+
         auth_header = request.headers.get("authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             log.warning(f"Missing or invalid auth header for {request.method} {request.url.path}")
@@ -848,7 +838,7 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
                 {"error": "Missing or invalid Authorization header"}, 
                 status_code=401
             )
-        
+
         token = auth_header[7:]  # Remove "Bearer " prefix
         
         # Validate token against .tokens file
@@ -869,21 +859,21 @@ async def handle_execute_junos_command(arguments: dict, context: Context) -> lis
     router_name = arguments.get("router_name", "")
     command = arguments.get("command", "")
     timeout = get_timeout_with_fallback(arguments.get("timeout"))
-    
+
     if router_name not in devices:
         result = f"Router {router_name} not found in the device mapping."
     else:
         log.debug(f"Executing command {command} on router {router_name} with timeout {timeout}s")
         result = _run_junos_cli_command(router_name, command, timeout)
-    
+
     end_time = time.time()
     end_timestamp = datetime.now(timezone.utc).isoformat()
     execution_duration = round(end_time - start_time, 3)
     content_block = types.TextContent(
         type="text",
         text=result,
-        annotations={"router_name": router_name, 
-                     "command": command, 
+        annotations={"router_name": router_name,
+                     "command": command,
                      "metadata": {
                         "execution_duration": execution_duration,
                         "start_time": start_timestamp,
@@ -891,6 +881,225 @@ async def handle_execute_junos_command(arguments: dict, context: Context) -> lis
                         }
                     })
     log.debug(f"content block: {content_block}")
+    return [content_block]
+
+async def handle_execute_junos_command_batch(arguments: dict, context: Context) -> list[types.ContentBlock]:
+    """
+    Handler for execute_junos_command_batch tool - executes same command on multiple routers in parallel.
+
+    This function demonstrates async/await parallel execution patterns. The "magic" of parallelism
+    comes from three key concepts:
+
+    1. ASYNC/AWAIT: Allows cooperative multitasking - while one router is waiting for network I/O,
+       other routers can be contacted simultaneously
+
+    2. THREAD POOL: PyEZ's Device.cli() is synchronous (blocking), so we use anyio.to_thread.run_sync()
+       to run it in a background thread without blocking the async event loop
+
+    3. ASYNCIO.GATHER: Launches multiple async operations simultaneously and waits for all to complete
+
+    Real-world analogy: Instead of calling 3 restaurants sequentially and waiting on hold for each
+    (serial execution = 3 × 2 minutes = 6 minutes), you have 3 friends call simultaneously
+    (parallel execution = max(2, 2, 2) = 2 minutes total).
+    """
+    import asyncio
+
+    batch_start_time = time.time()
+    router_names = arguments.get("router_names", [])
+    command = arguments.get("command", "")
+    timeout = get_timeout_with_fallback(arguments.get("timeout"))
+
+    # ============================================================================
+    # STEP 1: Input Validation
+    # ============================================================================
+    # Fail fast if inputs are invalid - no point starting parallel execution
+    # if we know it will fail
+
+    if not router_names:
+        return [types.TextContent(
+            type="text",
+            text="Error: router_names list is required and cannot be empty"
+        )]
+
+    if not command:
+        return [types.TextContent(
+            type="text",
+            text="Error: command is required"
+        )]
+
+    # Validate all routers exist before executing - prevents partial failures
+    invalid_routers = [r for r in router_names if r not in devices]
+    if invalid_routers:
+        return [types.TextContent(
+            type="text",
+            text=f"Error: The following routers not found in device mapping: {', '.join(invalid_routers)}"
+        )]
+
+    log.info(f"Executing batch command on {len(router_names)} routers in parallel: {command}")
+    await context.info(f"Executing command on {len(router_names)} routers in parallel...")
+
+    # ============================================================================
+    # STEP 2: Define Per-Router Async Function
+    # ============================================================================
+    # This nested async function will be called once per router, and all calls
+    # will run in parallel thanks to asyncio.gather() below
+
+    async def execute_on_router(router_name: str) -> dict:
+        """
+        Execute command on a single router and return structured result.
+
+        This is an ASYNC function, which means it can yield control to the event loop
+        while waiting for I/O operations (like network connections to routers).
+
+        KEY INSIGHT: Each call to this function represents one "parallel task".
+        When we create 3 tasks, they all run concurrently.
+        """
+        start_time = time.time()
+        start_timestamp = datetime.now(timezone.utc).isoformat()
+
+        try:
+            # ----------------------------------------------------------------
+            # THE MAGIC: anyio.to_thread.run_sync()
+            # ----------------------------------------------------------------
+            # Problem: _run_junos_cli_command() is SYNCHRONOUS (blocking)
+            # - It uses PyEZ's Device.cli() which blocks the thread while waiting
+            # - If we called it directly, it would block the async event loop
+            # - This would make everything serial again (defeating parallelism)
+            #
+            # Solution: anyio.to_thread.run_sync()
+            # - Runs the blocking function in a background thread pool
+            # - The async event loop remains free to handle other tasks
+            # - Multiple threads can run simultaneously (one per router)
+            #
+            # Result: True parallel execution!
+            # - While router1's thread waits for SSH response, router2's thread
+            #   can be establishing its connection, and router3's thread can be
+            #   sending its command, etc.
+            #
+            # Think of it like: Each router gets its own phone line (thread),
+            # and all phone calls happen at the same time instead of one after another.
+
+            result = await anyio.to_thread.run_sync(
+                _run_junos_cli_command,  # The synchronous function to run
+                router_name,              # Arguments to pass to it
+                command,
+                timeout
+            )
+
+            # Determine if this was a success or error based on result content
+            # (the _run_junos_cli_command returns error messages as strings)
+            is_error = result.startswith("Connection error") or result.startswith("An error occurred") or result.startswith("Error:")
+            status = "failed" if is_error else "success"
+
+        except Exception as e:
+            # Catch any unexpected exceptions (shouldn't happen normally)
+            result = f"Exception during execution: {str(e)}"
+            status = "failed"
+
+        end_time = time.time()
+        end_timestamp = datetime.now(timezone.utc).isoformat()
+        execution_duration = round(end_time - start_time, 3)
+
+        # Return structured data for this single router
+        return {
+            "router_name": router_name,
+            "status": status,
+            "output": result,
+            "execution_duration": execution_duration,
+            "start_time": start_timestamp,
+            "end_time": end_timestamp
+        }
+
+    # ============================================================================
+    # STEP 3: Launch All Tasks in Parallel with asyncio.gather()
+    # ============================================================================
+    # This is where the REAL MAGIC happens!
+    #
+    # asyncio.gather() explanation:
+    # -----------------------------
+    # 1. List comprehension creates N async tasks (one per router):
+    #    [execute_on_router("router1"), execute_on_router("router2"), ...]
+    #
+    # 2. The * (splat) operator unpacks them as individual arguments:
+    #    asyncio.gather(task1, task2, task3, ...)
+    #
+    # 3. gather() schedules ALL tasks to run CONCURRENTLY on the event loop:
+    #    - All tasks start approximately at the same time
+    #    - While one task waits for I/O, others continue executing
+    #    - The event loop switches between tasks as they yield control (at await points)
+    #
+    # 4. await gather() waits for ALL tasks to complete and returns results in order:
+    #    results = [result1, result2, result3, ...]
+    #
+    # Timeline visualization (3 routers, each takes ~1.2 seconds):
+    #
+    # SERIAL EXECUTION (without gather):
+    # Router1: [===========]
+    # Router2:              [===========]
+    # Router3:                           [===========]
+    # Total:   |----------------------------------|  (~3.6 seconds)
+    #
+    # PARALLEL EXECUTION (with gather):
+    # Router1: [===========]
+    # Router2: [===========]
+    # Router3: [===========]
+    # Total:   |-----------|                         (~1.2 seconds)
+    #
+    # Key: Each router runs in its own thread, so they all complete in the time
+    # it takes for the slowest one to finish!
+
+    results = await asyncio.gather(
+        *[execute_on_router(router_name) for router_name in router_names],
+        return_exceptions=False  # If any task raises an exception, propagate it immediately
+    )
+
+    batch_end_time = time.time()
+    batch_duration = round(batch_end_time - batch_start_time, 3)
+
+    # ============================================================================
+    # STEP 4: Process and Format Results
+    # ============================================================================
+    # At this point, ALL routers have completed (or failed), and we have all results
+
+    # Calculate summary statistics
+    successful_count = sum(1 for r in results if r["status"] == "success")
+    failed_count = len(results) - successful_count
+
+    # Build structured response with summary + individual results
+    response_data = {
+        "summary": {
+            "command": command,
+            "total_routers": len(router_names),
+            "successful": successful_count,
+            "failed": failed_count,
+            "total_duration": batch_duration
+        },
+        "results": results  # This contains all per-router results in order
+    }
+
+    # Format as pretty JSON for LLM consumption
+    # The LLM can easily parse this and identify which output came from which router
+    formatted_output = json.dumps(response_data, indent=2)
+
+    log.info(f"Batch command execution completed: {successful_count} successful, {failed_count} failed, {batch_duration}s total")
+    await context.info(f"Batch execution complete: {successful_count}/{len(router_names)} successful")
+
+    # Return as MCP TextContent with annotations for structured metadata
+    content_block = types.TextContent(
+        type="text",
+        text=formatted_output,
+        annotations={
+            "command": command,
+            "router_names": router_names,
+            "batch_metadata": {
+                "total_routers": len(router_names),
+                "successful": successful_count,
+                "failed": failed_count,
+                "total_duration": batch_duration
+            }
+        }
+    )
+
     return [content_block]
 
 async def handle_get_junos_config(arguments: dict, context: Context) -> list[types.ContentBlock]:
@@ -901,7 +1110,7 @@ async def handle_get_junos_config(arguments: dict, context: Context) -> list[typ
         result = f"Router {router_name} not found in the device mapping."
     else:
         log.debug(f"Getting configuration from router {router_name}")
-        result = _run_junos_cli_command(router_name, "show configuration | display inheritance no-comments | no-more")
+        result = _run_junos_cli_command(router_name, "show configuration | display inheritance no-comments | display set | no-more")
     
     content_block = types.TextContent(
         type="text",
@@ -931,6 +1140,277 @@ async def handle_junos_config_diff(arguments: dict, context: Context) -> list[ty
     log.debug(f"content block: {content_block}")
 
     return [content_block]
+
+async def handle_render_and_apply_j2_template(arguments: dict, context) -> list[types.ContentBlock]:
+    """
+    Handler for render_and_apply_j2_template tool
+    
+    Renders a Jinja2 template with variables and optionally applies it to devices
+    
+    Args:
+        arguments: Dictionary containing:
+            - template_content: Jinja2 template content as string
+            - vars_content: YAML variables content as string
+            - router_name: Router name to apply config to (optional, single router)
+            - router_names: List of router names to apply config to (optional, multiple routers)
+            - apply_config: Boolean to apply or just render (default: False)
+            - commit_comment: Optional commit comment
+            - dry_run: Boolean to show diff without committing (default: False)
+        context: MCP Context object
+    
+    Returns:
+        List of TextContent blocks with results
+    """
+    template_content = arguments.get("template_content", "")
+    vars_content = arguments.get("vars_content", "")
+    router_name = arguments.get("router_name", "")
+    router_names = arguments.get("router_names", [])
+    apply_config = arguments.get("apply_config", False)
+    commit_comment = arguments.get("commit_comment", "Configuration applied via Jinja2 template")
+    dry_run = arguments.get("dry_run", False)
+    
+    results = []
+    
+    # Step 1: Validate inputs
+    if not template_content:
+        return [types.TextContent(
+            type="text",
+            text="❌ Error: template_content is required"
+        )]
+    
+    if not vars_content:
+        return [types.TextContent(
+            type="text",
+            text="❌ Error: vars_content is required"
+        )]
+    
+    # Handle single router_name or list of router_names
+    if router_name and not router_names:
+        router_names = [router_name]
+    
+    # Step 2: Load variables from YAML string
+    try:
+        await context.info("Parsing variables from YAML content...")
+        variables = yaml.safe_load(vars_content)
+        
+        if not variables:
+            return [types.TextContent(
+                type="text",
+                text="❌ Error: Variables content is empty or invalid"
+            )]
+            
+        await context.debug(f"Loaded variables: {variables}")
+        
+    except yaml.YAMLError as e:
+        return [types.TextContent(
+            type="text",
+            text=f"❌ Error parsing YAML content: {e}"
+        )]
+    except Exception as e:
+        return [types.TextContent(
+            type="text",
+            text=f"❌ Error loading variables: {e}"
+        )]
+    
+    # Step 3: Setup Jinja2 environment and render template
+    try:
+        await context.info("Rendering Jinja2 template...")
+        
+        env = Environment(
+            trim_blocks=True,
+            lstrip_blocks=True,
+            autoescape=False
+        )
+        
+        template = env.from_string(template_content)
+        rendered_config = template.render(variables)
+        
+        await context.debug(f"Rendered configuration:\n{rendered_config}")
+        
+    except TemplateError as e:
+        return [types.TextContent(
+            type="text",
+            text=f"❌ Error rendering template: {e}"
+        )]
+    except Exception as e:
+        return [types.TextContent(
+            type="text",
+            text=f"❌ Error during template rendering: {e}"
+        )]
+    
+    # Step 4: If not applying, just return the rendered config
+    if not apply_config:
+        result_text = f"""✅ Template rendered successfully!
+
+**Rendered Configuration:**
+```
+{rendered_config}
+```
+
+To apply this configuration to devices, set apply_config=true and provide router_name or router_names.
+"""
+        return [types.TextContent(
+            type="text",
+            text=result_text,
+            annotations={
+                "rendered_config": rendered_config,
+                "variables": str(variables)
+            }
+        )]
+    
+    # Step 5: Apply configuration to specified routers
+    if not router_names:
+        return [types.TextContent(
+            type="text",
+            text="❌ Error: router_name or router_names must be provided when apply_config=true"
+        )]
+
+    application_results = []
+    
+    for rtr_name in router_names:
+        if rtr_name not in devices:
+            application_results.append(f"❌ {rtr_name}: Router not found in device mapping")
+            await context.warning(f"Router {rtr_name} not found")
+            continue
+        
+        try:
+            await context.info(f"{'Checking' if dry_run else 'Applying'} configuration on {rtr_name}...")
+            
+            device_info = devices[rtr_name]
+            
+            # Use prepare_connection_params to get proper connection parameters
+            try:
+                connect_params = prepare_connection_params(device_info, rtr_name)
+            except ValueError as ve:
+                application_results.append(f"❌ {rtr_name}: {ve}")
+                await context.error(f"{rtr_name}: {ve}")
+                continue
+            
+            # Connect to device
+            dev = Device(**connect_params)
+            
+            try:
+                dev.open()
+                await context.info(f"Connected to {rtr_name}")
+                
+                # Load configuration using exclusive mode
+                try:
+                    with Config(dev, mode='exclusive') as cu:
+                        await context.info(f"Loading configuration on {rtr_name}...")
+                        cu.load(rendered_config, format='set')
+                        
+                        # Get diff
+                        diff = cu.diff()
+                        
+                        if not diff:
+                            result_msg = "No configuration changes detected"
+                            application_results.append(f"ℹ️  {rtr_name}: {result_msg}")
+                            await context.info(f"{rtr_name}: {result_msg}")
+                        else:
+                            if dry_run:
+                                # DRY RUN: Perform commit check, show diff, and rollback without committing
+                                await context.info(f"Performing commit check on {rtr_name}...")
+                                
+                                try:
+                                    check_result = cu.commit_check()
+                                    
+                                    if not check_result:
+                                        result_msg = f"Commit check failed - configuration has errors"
+                                        application_results.append(f"❌ {rtr_name}: {result_msg}")
+                                        await context.error(f"{rtr_name}: {result_msg}")
+                                    else:
+                                        result_msg = f"Configuration check successful. Changes:\n\n{diff}"
+                                        application_results.append(f"🔍 {rtr_name}: {result_msg}")
+                                        await context.info(f"{rtr_name}: Dry-run commit check passed")
+                                    
+                                except Exception as check_error:
+                                    result_msg = f"Commit check error: {check_error}"
+                                    application_results.append(f"❌ {rtr_name}: {result_msg}")
+                                    await context.error(f"{rtr_name}: {result_msg}")
+                                finally:
+                                    # CRITICAL: Always rollback in dry-run mode
+                                    await context.info(f"{rtr_name}: Rolling back changes (dry-run mode)")
+                                    try:
+                                        # Perform the rollback
+                                        cu.rollback()
+                                        # Verify rollback success by checking if there are pending changes
+                                        # After a successful rollback, there should be no differences
+                                        diff = cu.diff()
+                                        
+                                        if diff:
+                                            await context.error(f"{rtr_name}: Rollback verification failed - unexpected changes remain")
+                                            await context.error(f"{rtr_name}: Remaining diff:\n{diff}")
+                                        else:
+                                            await context.info(f"{rtr_name}: Rollback verified successfully - no pending changes")
+                                            
+                                    except Exception as rollback_error:
+                                        await context.error(f"{rtr_name}: Rollback failed with error: {str(rollback_error)}")
+                            else:
+                                # REAL COMMIT: Perform commit check before committing
+                                await context.info(f"Performing commit check on {rtr_name}...")
+                                check_result = cu.commit_check()
+                                
+                                if not check_result:
+                                    result_msg = "Commit check failed - configuration has errors"
+                                    application_results.append(f"❌ {rtr_name}: {result_msg}")
+                                    await context.error(f"{rtr_name}: {result_msg}")
+                                    cu.rollback()
+                                else:
+                                    # Apply the changes
+                                    await context.info(f"Committing configuration on {rtr_name}...")
+                                    cu.commit(comment=commit_comment)
+                                    result_msg = f"Configuration committed successfully. Changes:\n\n{diff}"
+                                    application_results.append(f"✅ {rtr_name}: {result_msg}")
+                                    await context.info(f"{rtr_name}: Configuration committed successfully")
+
+                except (ConfigLoadError, CommitError, LockError) as e:
+                    error_msg = f"Configuration error: {e}"
+                    application_results.append(f"❌ {rtr_name}: {error_msg}")
+                    await context.error(f"{rtr_name}: {error_msg}")
+
+            except ConnectError as e:
+                error_msg = f"Connection failed: {e}"
+                application_results.append(f"❌ {rtr_name}: {error_msg}")
+                await context.error(f"{rtr_name}: {error_msg}")
+            finally:
+                # Always close the device connection
+                try:
+                    dev.close()
+                    await context.info(f"Disconnected from {rtr_name}")
+                except Exception as close_error:
+                    log.warning(f"Error while closing test connection to {rtr_name}: {close_error}")
+
+        except Exception as e:
+            error_msg = f"Failed to apply configuration: {e}"
+            application_results.append(f"❌ {rtr_name}: {error_msg}")
+            await context.error(f"{rtr_name}: {error_msg}")
+    
+    # Step 6: Format final results
+    summary = "\n".join(application_results)
+    
+    final_text = f"""{'🔍 DRY RUN - ' if dry_run else ''}Configuration {'preview' if dry_run else 'application'} complete!
+
+**Routers:** {', '.join(router_names)}
+
+**Rendered Configuration:**
+```
+{rendered_config}
+```
+
+**Results:**
+{summary}
+"""
+    
+    return [types.TextContent(
+        type="text",
+        text=final_text,
+        annotations={
+            "router_names": router_names,
+            "rendered_config": rendered_config,
+            "dry_run": dry_run,
+            "variables": str(variables)
+        }
+    )]
 
 async def handle_gather_device_facts(arguments: dict, context: Context) -> list[types.ContentBlock]:
     """Handler for gather_device_facts tool"""
@@ -978,19 +1458,44 @@ async def handle_gather_device_facts(arguments: dict, context: Context) -> list[
     
     return [content_block]
 
+
 async def handle_get_router_list(arguments: dict, context: Context) -> list[types.ContentBlock]:
     """Handler for get_router_list tool"""
     log.debug("Getting list of routers")
-    routers = list(devices.keys())
-    result = ', '.join(routers)
-    
+
+    # Build structured device information, excluding sensitive data
+    router_info = {}
+    for router_name, device_config in devices.items():
+        # Create a deep copy of device config to avoid modifying original
+        import copy
+        filtered_config = copy.deepcopy(device_config)
+
+        # Exclude ssh_config (jump host/proxy configuration)
+        if "ssh_config" in filtered_config:
+            del filtered_config["ssh_config"]
+
+        # Exclude sensitive auth credentials but keep auth type
+        if "auth" in filtered_config:
+            # Remove password if present
+            if "password" in filtered_config["auth"]:
+                del filtered_config["auth"]["password"]
+            # Remove private key path if present
+            if "private_key_path" in filtered_config["auth"]:
+                del filtered_config["auth"]["private_key_path"]
+
+        router_info[router_name] = filtered_config
+
+    # Format as pretty JSON
+    result = json.dumps(router_info, indent=2)
+
     content_block = types.TextContent(
         type="text",
         text=result
         )
-    
+
     log.debug(f"content block: {content_block}")
     return [content_block]
+
 
 async def handle_load_and_commit_config(arguments: dict, context: Context) -> list[types.ContentBlock]:
     """Handler for load_and_commit_config tool"""
@@ -1100,7 +1605,6 @@ async def handle_jnh_exceptions_trace(arguments: dict, context) -> list[types.Co
     else:
         result = str(result)
     return [types.TextContent(type="text", text=result)]
-
 # Tool registry mapping tool names to their handler functions
 # To add a new tool:
 # 1. Create an async handler function: async def handle_my_new_tool(arguments: dict) -> list[types.ContentBlock]
@@ -1108,8 +1612,10 @@ async def handle_jnh_exceptions_trace(arguments: dict, context) -> list[types.Co
 # 3. Add the tool definition to list_tools() method
 TOOL_HANDLERS = {
     "execute_junos_command": handle_execute_junos_command,
+    "execute_junos_command_batch": handle_execute_junos_command_batch,
     "get_junos_config": handle_get_junos_config,
     "junos_config_diff": handle_junos_config_diff,
+    "render_and_apply_j2_template": handle_render_and_apply_j2_template,
     "gather_device_facts": handle_gather_device_facts,
     "get_router_list": handle_get_router_list,
     "load_and_commit_config": handle_load_and_commit_config,
@@ -1117,15 +1623,6 @@ TOOL_HANDLERS = {
     "pfe_debug_exceptions": handle_jnh_exceptions_trace
 }
 
-# Auto-discover and load external tools from tools/ directory
-#external_handlers, external_tool_defs = discover_and_load_tools(
-#    device_lookup=lambda rn: devices.get(rn),
-#    prepare_conn=prepare_connection_params
-#)
-#TOOL_HANDLERS.update(external_handlers)
-
-# Initialize empty list for external tools if not using discovery
-external_tool_defs = []
 
 def create_mcp_server() -> Server:
     """Create and configure the MCP server with all tools"""
@@ -1163,7 +1660,7 @@ def create_mcp_server() -> Server:
     @app.list_tools()
     async def list_tools() -> list[types.Tool]:
         """List available tools"""
-        tools_list = [
+        return [
             types.Tool(
                 name="execute_junos_command",
                 description="Execute a Junos command on the router",
@@ -1175,6 +1672,23 @@ def create_mcp_server() -> Server:
                         "timeout": {"type": "integer", "description": "Command timeout in seconds", "default": 360}
                     },
                     "required": ["router_name", "command"]
+                }
+            ),
+            types.Tool(
+                name="execute_junos_command_batch",
+                description="Execute the same Junos command on multiple routers in parallel. Returns structured JSON output with per-router results, timing, and success/failure status.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "router_names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of router names to execute the command on"
+                        },
+                        "command": {"type": "string", "description": "The command to execute on all routers"},
+                        "timeout": {"type": "integer", "description": "Command timeout in seconds per router", "default": 360}
+                    },
+                    "required": ["router_names", "command"]
                 }
             ),
             types.Tool(
@@ -1198,6 +1712,22 @@ def create_mcp_server() -> Server:
                         "version": {"type": "integer", "description": "Rollback version to compare against (1-49)", "default": 1}
                     },
                     "required": ["router_name"]
+                }
+            ),
+            types.Tool(
+                name="render_and_apply_j2_template",
+                description="Render a Jinja2 template and apply it to the router",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "router_name": {"type": "string", "description": "The name of the router"},
+                        "template_content": {"type": "string", "description": "Jinja2 template to load"},
+                        "vars_content": {"type": "string", "description": "YAML variables to load"},
+                        "apply_config": {"type": "boolean", "description": "Boolean to apply or just render (default: False)"},
+                        "dry_run": {"type": "boolean", "description": "Boolean to show diff without committing (default: False)"},
+                        "commit_comment": {"type": "string", "description": "Commit comment", "default": "Configuration loaded via MCP"}
+                    },
+                    "required": ["template_content", "vars_content"]
                 }
             ),
             types.Tool(
@@ -1265,8 +1795,6 @@ def create_mcp_server() -> Server:
                 }
             )
         ]
-        tools_list.extend(external_tool_defs)
-        return tools_list
 
     return app
 
@@ -1341,8 +1869,6 @@ def main():
     # Run with the specified transport
     try:
         if args.transport == 'stdio':
-            # For stdio transport, run directly
-            from mcp.server.stdio import stdio_server
             
             async def run_stdio():
                 async with stdio_server() as (read_stream, write_stream):
