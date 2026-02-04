@@ -28,7 +28,9 @@ from jinja2 import Environment, FileSystemLoader, TemplateNotFound
 import json
 import yaml
 import sys
+import re
 import signal
+import paramiko
 from typing import Any, Sequence
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 
@@ -42,7 +44,11 @@ from mcp.server.elicitation import (
     DeclinedElicitation,
     CancelledElicitation,
 )
-
+from scapy.all import Ether, IP, IPv6, UDP, TCP, ICMP, ARP, bind_layers, Dot1Q
+from scapy.contrib.mpls import MPLS
+from scapy.contrib.ospf import OSPF_Hdr, OSPF_Hello, OSPF_LSA_Hdr
+from scapy.contrib.ldp import LDP
+from scapy.contrib.rsvp import RSVP
 import anyio
 import mcp.types as types
 from mcp.server.lowlevel import Server
