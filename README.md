@@ -88,9 +88,9 @@ Direct device management and troubleshooting:
 │              │ HTTP APIs                          │ SSH / NETCONF   │         │
 └──────────────┼────────────────────────────────────┼─────────────────┘         │
                │                                    │                           │
-    ┌──────────┴───────────┐                        ▼────────────┐              │
-    │                      │                                     │              │
-    ▼                      ▼                                     ▼              │
+    ┌──────────                                     ▼────────────┐              │
+    │                                                            │              │
+    ▼                                                            ▼              │
 ┌─────────────┐    ┌─────────────┐               ┌────────────────────┐         │
 │  InfluxDB   │◄───│  Telegraf   │               │  Juniper Devices   │         │
 │   :8086     │    │ (Collector) │               │                    │         │
@@ -98,14 +98,14 @@ Direct device management and troubleshooting:
 │    Metrics  │    │ SSH         │               │ • router2          │         │
 │ [Docker]    │    │ [Docker]    │               │ • MX960 / MX480    │         │
 │             │    │             │               │                    │         │
-│ Volumes:    │    └──────▲──────┘               │ SSH :22            │         │
-│ • data      │           │                      │ NETCONF :830       │         │
-│ • config    │           │                      └────────────────────┘         │
-└─────┬───────┘           │                                                     │
-      │                   │ Data Collection (PFE exceptions)                    │
-      ▼                   │                                                     │
-┌─────────────┐           │                                                     │
-│  Grafana    │───────────┘                                                     │
+│ Volumes:    │    └─────--──────┘               │ SSH :22            │         │
+│ • data      │                                  │ NETCONF :830       │         │
+│ • config    │                                  └────────────────────┘         │
+└─────┬───────┘                                                                 │
+      │                     Data Collection (PFE exceptions)                    │
+      ▼                                                                         │
+┌─────────────┐                                                                 │
+│  Grafana    │                                                                 │
 │   :3000     │                                                                 │
 │ Dashboards  │                                                                 │
 │ [Docker]    │                                                                 │
